@@ -9,6 +9,8 @@ import astropy.units as u
 from astropy.table import Table
 from astropy.units.quantity import Quantity
 
+import timeit
+
 HEXITEC_FRAME_DURATION = Quantity(1e-4, unit=u.s)
 
 class HexitecPileUp():
@@ -17,10 +19,11 @@ class HexitecPileUp():
     def __init__(self):
         """Instantiates a HexitecPileUp object."""
         self.frame_duration = Quantity(1e-4, unit=u.s)
+        self.first_photon_offset = Quantity(0., unit=u.s)
 
-    def simulate_masking_on_spectrum_1pixel(incident_spectrum, n_photons, photon_rate):
+    def simulate_masking_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
         """
-        Simulates "masking" effect in a single HEXITEC pixel on a binned incident photon spectrum.
+        Simulates "masking" in a single HEXITEC pixel on a binned incident photon spectrum.
 
         This simulation is a 1st order approximation of the effect of pile up.
         It assumes than only the most energetic photon incident on the detector
@@ -33,12 +36,12 @@ class HexitecPileUp():
             lower_bin_edges : `astropy.units.quantity.Quantity`
             upper_bin_edges : `astropy.units.quantity.Quantity`
             counts : array-like
+        photon_rate : `astropy.units.quantity.Quantity`
+          The average photon rate.
         n_photons : `int`
           Number of counts to simulate hitting the detector.  Note that the first
           count will not be included in output spectrum as there is no information
           on the waiting time before it.
-        photon_rate : `astropy.units.quantity.Quantity`
-          The average photon rate.
 
         Returns
         -------
@@ -47,25 +50,35 @@ class HexitecPileUp():
 
         """
         self.incident_spectrum = incident_spectrum
-        if type(self.photon_rate) is not astropy.units.quantity.Quantity:
+        if type(photon_rate) is not Quantity:
             raise TypeError("photon_rate must be an astropy.units.quantity.Quantity")
         self.photon_rate = photon_rate
         # Generate random photon energies from incident spectrum to
         # enter detector.  Result recorded in self.incident_photons.
-        self.generate_random_photons_from_spectrum(incident_spectrum["lower_bin_edges"],
-                                                   incident_spectrum["upper_bin_edges"],
-                                                   incident_spectrum["counts"], n_photons)
+        self.generate_random_photons_from_spectrum(n_photons)
         # Generate random waiting times between incident photons.
         # Result stored in self.photon_waiting_times
-        self.generate_poisson_waiting_times(n_photons-1, self.photon_rate)
+        self.generate_poisson_waiting_times(n_photons-1)
+        self.photon_waiting_times = self.photon_waiting_times + \
+          self.first_photon_offset.to(self.photon_waiting_times.unit)
+        self.photon_waiting_times = np.insert(
+            self.photon_waiting_times, 0,
+            self.first_photon_offset.to(self.photon_waiting_times.unit))
         # Mark photons which were recorded and unrecorded using a
         # masked array.  Result recorded in self.measured_photons.
         self.simulate_masking_on_photon_list_1pixel()
         # Convert measured photon list into counts in same bins as the
         # incident spectrum.
-        measured_counts = np.histogram(self.measured_photons.compressed(), bins=list(
-            self.incident_spectrum["lower_bin_edges"]).append(
-                self.incident_spectrum["upper_bin_edges"][-1]))[0]
+        print "Converting masked photon list into spectrum."
+        time1 = timeit.default_timer()
+        #measured_counts = np.histogram(self.measured_photons.compressed(), bins=list(
+        #    self.incident_spectrum["lower_bin_edges"]).append(
+        #        self.incident_spectrum["upper_bin_edges"][-1]))[0]
+        bins = list(self.incident_spectrum["lower_bin_edges"])
+        bins.append(self.incident_spectrum["upper_bin_edges"][-1])
+        measured_counts = np.histogram(self.measured_photons.compressed(), bins=bins)[0]
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
         # Return an astropy table of the measured spectrum.
         self.measured_spectrum = Table(
             [self.incident_spectrum["lower_bin_edges"],
@@ -109,15 +122,23 @@ class HexitecPileUp():
         # Assign photons to HEXITEC frames.
         n_photons = len(self.incident_photons)
         photon_indices = np.arange(n_photons)
-        self.photon_indices_in_frames = [photon_indices[np.logical_and(
+        print "Assigning photons to frames."
+        time1 = timeit.default_timer()
+        photon_indices_in_frames = (photon_indices[np.logical_and(
             photon_times >= self.frame_duration*i,
-            photon_times < self.frame_duration*(i+1))] for i in np.arange(n_frames)]
+            photon_times < self.frame_duration*(i+1))] for i in range(n_frames))
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
         # Create array of measured photons by masking photons from
         # incident photons.
+        print "Masking photons."
+        time1 = timeit.default_timer()
         self.measured_photons = ma.masked_array(self.incident_photons, mask=[1]*n_photons)
         unmask_indices = [frame[np.argmax(self.incident_photons[frame])]
-                          for frame in self.photon_indices_in_frames if len(frame) > 0]
+                          for frame in photon_indices_in_frames if len(frame) > 0]
         self.measured_photons.mask[unmask_indices] = False
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
 
 
     def generate_random_photons_from_spectrum(self, n_counts):
@@ -131,24 +152,33 @@ class HexitecPileUp():
           Lower edge of each bin of spectrum.
         self.incident_spectrum["upper_bin_edges"] : array_like
           Upper edge of each bin of spectrum.
-        n_counts : `float` or `int`
+        n_counts : `int`
           Total number of random counts to be generated.
       
         """
+        n_counts = int(n_counts)
         # Calculate cumulative density function of spectrum for lower and
         # upper edges of spectral bins.
         cdf_upper = np.cumsum(self.incident_spectrum["counts"])
         cdf_lower = np.insert(cdf_upper, 0, 0.)
         cdf_lower = np.delete(cdf_lower, -1)
         # Generate random numbers representing CDF values.
+        print "Generating random numbers for photon energy transformation."
+        time1 = timeit.default_timer()
         randoms = np.asarray([random.random() for i in range(n_counts)])*cdf_upper[-1]
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
         # Generate array of spectrum bin indices.
+        print "Transforming random numbers into photon energies."
+        time1 = timeit.default_timer()
         bin_indices = np.arange(len(self.incident_spectrum["lower_bin_edges"]))
         # Generate random counts from randomly generated CDF values.
         #random_photons = Quantity([lower_bin_edges.value[
         self.incident_photons = Quantity([self.incident_spectrum["lower_bin_edges"].data[
             bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
             for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
 
     def generate_poisson_waiting_times(self, n_times, xmin=Quantity(0, unit=u.s)):
         """Generates waiting times between events for a given number of events.
@@ -173,16 +203,25 @@ class HexitecPileUp():
           Time between each consecutive event.
 
         """
+        n_times = int(n_times)
         # If xmin input isn't an astropy Quantity, raise TypeError.
-        if type(xmin) is not astropy.units.quantity.Quantity:
+        if type(xmin) is not Quantity:
             raise TypeError("rate must be an astropy.units.quantity.Quantity")
         self.xmin = xmin
         # Generate random numbers for selecting random waiting times.
-        randoms = np.asarray([random.random() for i in range(n_times)], dtype=float)
+        print "Generating random numbers for waiting time transformation."
+        time1 = timeit.default_timer()
+        randoms = np.asarray([random.random() for i in range(n_times)])
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
         # Convert random numbers to waiting times by transforming through
         # the CDF of the exponential distribution.
         # Note that xmin unit is also changed to agree with rate unit.
-        self.photon_waiting_times = (xmin-(1./rate)*np.log(1-randoms)).to(rate.unit**-1)
+        print "Transforming random numbers into photon waiting times."
+        time1 = timeit.default_timer()
+        self.photon_waiting_times = (self.xmin-(1./self.photon_rate)*np.log(1-randoms)).to(self.photon_rate.unit**(-1))
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
 
 
 def test_generate_random_photons_from_spectrum():
