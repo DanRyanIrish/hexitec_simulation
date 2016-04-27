@@ -57,13 +57,9 @@ class HexitecPileUp():
         # enter detector.  Result recorded in self.incident_photons.
         self.generate_random_photons_from_spectrum(n_photons)
         # Generate random waiting times between incident photons.
-        # Result stored in self.photon_waiting_times
-        self.generate_poisson_waiting_times(n_photons-1)
-        self.photon_waiting_times = self.photon_waiting_times + \
-          self.first_photon_offset.to(self.photon_waiting_times.unit)
-        self.photon_waiting_times = np.insert(
-            self.photon_waiting_times, 0,
-            self.first_photon_offset.to(self.photon_waiting_times.unit))
+        # Model as a Poisson process, i.e. draw from an exponential
+        # distrubtion.
+        self.photon_waiting_times = np.random.exponential(photon_rate, n_photons)
         # Mark photons which were recorded and unrecorded using a
         # masked array.  Result recorded in self.measured_photons.
         self.simulate_masking_on_photon_list_1pixel()
@@ -133,10 +129,10 @@ class HexitecPileUp():
         # incident photons.
         print "Masking photons."
         time1 = timeit.default_timer()
-        self.measured_photons = ma.masked_array(self.incident_photons, mask=[1]*n_photons)
         unmask_indices = [frame[np.argmax(self.incident_photons[frame])]
                           for frame in photon_indices_in_frames if len(frame) > 0]
-        self.measured_photons.mask[unmask_indices] = False
+        self.measured_photons = ma.masked_array(self.incident_photons, mask=[1]*n_photons)
+        self.measured_photons.mask[unmask_indices] = 0
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
 
@@ -177,49 +173,6 @@ class HexitecPileUp():
         self.incident_photons = Quantity([self.incident_spectrum["lower_bin_edges"].data[
             bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
             for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
-
-    def generate_poisson_waiting_times(self, n_times, xmin=Quantity(0, unit=u.s)):
-        """Generates waiting times between events for a given number of events.
-
-        It is assumed that the events are produced by a Poisson process,
-        i.e. they are statistically indepedent.  Therefore the waiting times
-        distribution is exponential.
-
-        Parameters
-        ----------
-        n_times : `int`
-          Number of waiting times to be generated.
-        self.photon_rate : `astropy.units.quantity.Quantity`
-          The average rate at which events are known to occur.
-        xmin : `astropy.units.quantity.Quantity`
-          minimum desired waiting time for any given event.
-          Default = 0s
-
-        Returns
-        -------
-        self.photon_waiting_times : `astropy.units.quantity.Quantity`
-          Time between each consecutive event.
-
-        """
-        n_times = int(n_times)
-        # If xmin input isn't an astropy Quantity, raise TypeError.
-        if type(xmin) is not Quantity:
-            raise TypeError("rate must be an astropy.units.quantity.Quantity")
-        self.xmin = xmin
-        # Generate random numbers for selecting random waiting times.
-        print "Generating random numbers for waiting time transformation."
-        time1 = timeit.default_timer()
-        randoms = np.asarray([random.random() for i in range(n_times)])
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
-        # Convert random numbers to waiting times by transforming through
-        # the CDF of the exponential distribution.
-        # Note that xmin unit is also changed to agree with rate unit.
-        print "Transforming random numbers into photon waiting times."
-        time1 = timeit.default_timer()
-        self.photon_waiting_times = (self.xmin-(1./self.photon_rate)*np.log(1-randoms)).to(self.photon_rate.unit**(-1))
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
 
