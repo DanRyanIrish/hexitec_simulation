@@ -56,24 +56,17 @@ class HexitecPileUp():
         # Generate random photon energies from incident spectrum to
         # enter detector.  Result recorded in self.incident_photons.
         self.generate_random_photons_from_spectrum(n_photons)
-        # Generate random waiting times between incident photons.
-        # Model as a Poisson process, i.e. draw from an exponential
-        # distrubtion.
-        self.photon_waiting_times = Quantity(np.random.exponential(1./photon_rate, n_photons),
-                                             unit='s')
         # Mark photons which were recorded and unrecorded using a
         # masked array.  Result recorded in self.measured_photons.
-        self.simulate_masking_on_photon_list_1pixel()
+        self.simulate_masking_on_photon_list_1pixel_lc()
         # Convert measured photon list into counts in same bins as the
         # incident spectrum.
         print "Converting masked photon list into spectrum."
         time1 = timeit.default_timer()
-        #measured_counts = np.histogram(self.measured_photons.compressed(), bins=list(
-        #    self.incident_spectrum["lower_bin_edges"]).append(
-        #        self.incident_spectrum["upper_bin_edges"][-1]))[0]
         bins = list(self.incident_spectrum["lower_bin_edges"])
         bins.append(self.incident_spectrum["upper_bin_edges"][-1])
-        measured_counts = np.histogram(self.measured_photons.compressed(), bins=bins)[0]
+        #measured_counts = np.histogram(self.measured_photons.compressed(), bins=bins)[0]
+        measured_counts = np.histogram(self.measured_photons["energy"], bins=bins)[0]
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
         # Return an astropy table of the measured spectrum.
@@ -155,21 +148,18 @@ class HexitecPileUp():
         # In resample command, '100U' signifies 100 microsecs.
         frame_peaks = timeseries.resample("100U", how=max)
         threshold = 0.
-        w = np.where(frame_peaks["Voltage"] > threshold)[0]
+        w = np.where(frame_peaks["voltage"] > threshold)[0]
         # Determine time unit of pandas timeseries and convert photon
         # times to Quantity.
-        tdunit = timeseries.index.dtype_str.split(("["))[-1].split(']')[0]
-        if tdunit in ["s", "ms", "us", "ns", "ps", "fs"]:
-            photon_times_quantity = Quantity(frame_peaks.index[w].values, unit=tdunit).to("s")
-        else:
-            raise TypeError("Unrecognised timedelta64 unit.")
+        photon_times = Quantity(frame_peaks.index[w].values, unit=self.sample_unit).to("s")
         # Combine photon times and energies into measured photon list.
-        self.measured_photons = Table([
-            photon_times, Quantity(frame_peaks["Voltage"][w], unit=self.incident_photons.unit)],
-            names=("Time", "Energy"))
+        self.measured_photons = Table([photon_times,
+                                       Quantity(frame_peaks["voltage"][w],
+                                                unit=self.incident_photons["energy"].unit)],
+                                       names=("time", "energy"))
 
 
-    def generate_random_photons_from_spectrum(self, n_counts):
+    def generate_random_photons_from_spectrum(self, n_photons):
         """Converts an input photon spectrum to a probability distribution.
 
         Parameters
@@ -184,7 +174,7 @@ class HexitecPileUp():
           Total number of random counts to be generated.
       
         """
-        n_counts = int(n_counts)
+        n_counts = int(n_photons)
         # Calculate cumulative density function of spectrum for lower and
         # upper edges of spectral bins.
         cdf_upper = np.cumsum(self.incident_spectrum["counts"])
@@ -200,32 +190,51 @@ class HexitecPileUp():
         print "Transforming random numbers into photon energies."
         time1 = timeit.default_timer()
         bin_indices = np.arange(len(self.incident_spectrum["lower_bin_edges"]))
-        # Generate random counts from randomly generated CDF values.
-        #random_photons = Quantity([lower_bin_edges.value[
-        self.incident_photons = Quantity([self.incident_spectrum["lower_bin_edges"].data[
+        # Generate random energies from randomly generated CDF values.
+        photon_energies = Quantity([self.incident_spectrum["lower_bin_edges"].data[
             bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
             for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
         time2 = timeit.default_timer()
+        # Generate random waiting times before each photon.
+        photon_waiting_times = Quantity(
+            np.random.exponential(1./self.photon_rate, n_photons), unit='s')
+        # Associate photon energies and time since start of
+        # observation (time=0) in output table.
+        self.incident_photons = Table([photon_waiting_times.cumsum(), photon_energies],
+                                      names=("time", "energy"))
         print "Finished in {0} s.".format(time2-time1)
 
 
-     def _convert_photons_to_timeseries(self, samples_per_frame=100):
+    def _convert_photons_to_timeseries(self, sample_step=100.*u.ns):
         """Create a time series of photon energies with a given sampling frequency."""
-        sample_unit = 'ns'
-        photon_times = self.photon_waiting_times.to(sample_unit).value.cumsum()
-        total_observing_time = photon_times[-1]
-        n_frames = int(total_observing_time/self.frame_duration.to(sample_unit).value+1)
-        n_samples = n_frames*samples_per_frame
-        # Define timestamps for times series.
-        timestamps = np.linspace(0, n_frames*self.frame_duration.to(sample_unit).value, n_samples+1)
+        # Define unit of time difference between each point in
+        # timeseries.  This unit must be in string format to be
+        # usable for astropy Quanities and pandas timedelta.
+        self.sample_unit = 'ns'
+        # Calculate number of frames and sample points in timeseries.
+        total_observing_time = self.incident_photons["time"][-1]*self.incident_photons["time"].unit
+        n_frames = int(total_observing_time.to(self.sample_unit).value/self.frame_duration.to(self.sample_unit).value+2)
+        # Define timestamps for timeseries from number of frames and
+        # sample points.
+        print "Generating timestamps."
+        time1 = timeit.default_timer()
+        timestamps = np.arange(0, n_frames*self.frame_duration.to(self.sample_unit).value,
+                               sample_step.to(self.sample_unit).value)
         timestamps = timestamps[:-1]
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
         # Find indices in timeseries closest to photon times.
-        photon_time_indices = [np.argmin(abs(timestamps-photon_time)) for photon_time in photon_times]
+        print "Locating photon indices in timestamps."
+        time1 = timeit.default_timer()
+        photon_time_indices = [np.argmin(abs(timestamps-photon_time.value))
+                               for photon_time in self.incident_photons["time"].to(self.sample_unit)]
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
         # Insert photons into timeseries.
-        data = np.zeros(n_samples)
-        data[photon_time_indices] = self.incident_photons.value
-        timeseries = pandas.DataFrame(data, index=pandas.to_timedelta(timestamps, sample_unit),
-                                      columns=["Voltage"])
+        data = np.zeros(len(timestamps))
+        data[photon_time_indices] = self.incident_photons["energy"].data
+        timeseries = pandas.DataFrame(
+                data, index=pandas.to_timedelta(timestamps, self.sample_unit), columns=["voltage"])
         return timeseries
 
 
@@ -261,7 +270,8 @@ def test_generate_random_photons_from_spectrum():
     # Assert where test_spectrum has significant number of counts, that
     # they are approximately equal to true_spectrums when scaled to n_counts.
     w = np.where(test_counts > 10.)[0]
-    np.testing.assert_allclose(expected_counts[w]/(expected_counts[0]/test_counts[0]), test_counts[w], rtol=0.01)
+    np.testing.assert_allclose(expected_counts[w]/(expected_counts[0]/test_counts[0]),
+                               test_counts[w], rtol=0.01)
 
 def test_simulate_masking_photon_list_1pixel():
     """Test simulate_masking_photon_list_1pixel()."""
@@ -286,23 +296,23 @@ def test_simulate_masking_photon_list_1pixel():
     assert expected_photons.data.unit == hpu.measured_photons.data.unit
 
 
-    def test_simulate_masking_photon_list_1pixel_lc():
+def test_simulate_masking_photon_list_1pixel_lc():
     """Test simulate_masking_photon_list_1pixel()."""
     # Define a HexitecPileUp object.
     hpu = HexitecPileUp()
     # Define input photon list and waiting times.
-    incident_photons = Quantity([1, 1, 2, 3, 5, 4, 6], unit=u.keV)
+    photon_energies = Quantity([1, 1, 2, 3, 5, 4, 6], unit=u.keV)
     photon_waiting_times = Quantity(
         np.array([0., 0.5, 0.5, 0.5, 0.5, 0.5, 2.5])*hpu.frame_duration, unit=u.s)
+    incident_photons = Table([photon_waiting_times.cumsum(), photon_energies], names=("time", "energy"))
     # Define expected output photon list.
     expected_indices = [0, 3, 4, 6]
-    expected_photons = Table([photon_waiting_times.cumsum()[expected_indices],
-                              incident_photons[expected_indices]], names=("Time", "Energy"))
+    expected_photons = incident_photons[expected_indices]
     # Calculate test measured photon list by calling
     # simulate_masking_photon_list_1pixel().
     hpu.incident_photons = incident_photons
-    hpu.photon_waiting_times = photon_waiting_times
+    #hpu.photon_waiting_times = photon_waiting_times
     hpu.simulate_masking_on_photon_list_1pixel_lc()
     # Assert test photon list is the same as expected photon list.
-    assert all(measured_photons["Energy"] == expected_photons["Energy"])
-    assert 0.*u.s <= all(expected_photons["Time"]-measured_photons["Time"]) < hpu.frame_duration
+    assert all(hpu.measured_photons["energy"] == expected_photons["energy"])
+    assert 0.*u.s <= all(expected_photons["time"]-hpu.measured_photons["time"]) < hpu.frame_duration
