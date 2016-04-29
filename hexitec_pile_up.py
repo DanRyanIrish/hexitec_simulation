@@ -19,7 +19,6 @@ class HexitecPileUp():
     def __init__(self):
         """Instantiates a HexitecPileUp object."""
         self.frame_duration = Quantity(1e-4, unit=u.s)
-        self.first_photon_offset = Quantity(0., unit=u.s)
 
     def simulate_masking_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
         """
@@ -59,7 +58,8 @@ class HexitecPileUp():
         # Generate random waiting times between incident photons.
         # Model as a Poisson process, i.e. draw from an exponential
         # distrubtion.
-        self.photon_waiting_times = np.random.exponential(photon_rate, n_photons)
+        self.photon_waiting_times = Quantity(np.random.exponential(1./photon_rate, n_photons),
+                                             unit='s')
         # Mark photons which were recorded and unrecorded using a
         # masked array.  Result recorded in self.measured_photons.
         self.simulate_masking_on_photon_list_1pixel()
@@ -109,7 +109,7 @@ class HexitecPileUp():
 
         """
         # Determine time of each photon hit from start of observing time.
-        photon_times = self.first_photon_offset+self.photon_waiting_times.cumsum()
+        photon_times = self.photon_waiting_times.cumsum()
         # Determine length of time from start of observation to time of
         # final photon hit.
         total_observing_time = photon_times[-1]
