@@ -58,7 +58,7 @@ class HexitecPileUp():
         self.generate_random_photons_from_spectrum(n_photons)
         # Mark photons which were recorded and unrecorded using a
         # masked array.  Result recorded in self.measured_photons.
-        self.simulate_masking_on_photon_list_1pixel_lc()
+        self.simulate_masking_on_photon_list_1pixel()
         # Convert measured photon list into counts in same bins as the
         # incident spectrum.
         print "Converting masked photon list into spectrum."
@@ -78,60 +78,6 @@ class HexitecPileUp():
 
 
     def simulate_masking_on_photon_list_1pixel(self):
-        """
-        Simulates "masking" effect in a single HEXITEC pixel on an incident photon list.
-
-        This simulation is a 1st order approximation of the effect of pile up.
-        It assumes than only the most energetic photon incident on the
-        detector within the period of a single frame is recorded.
-    
-        Parameters
-        ----------
-        self.incident_photons : `astropy.units.quantity.Quantity`
-          Array of each sequential photon falling of the HEXITEC pixel.
-        self.photon_waiting_times : `astropy.units.quantity.Quantity`
-          The time between each photon hit.  Note must therefore have length
-          1 less than incident_photons.
-        first_photon_offset : `astropy.units.quantity.Quantity`
-          Delay from start of first observing frame of HEXITEC detector until
-          first photon hit.  Default=0s.
-
-        Returns
-        -------
-        self.measured_photons : masked_Quantity
-          Incident photon list with unrecorded photons masked.
-
-        """
-        # Determine time of each photon hit from start of observing time.
-        photon_times = self.photon_waiting_times.cumsum()
-        # Determine length of time from start of observation to time of
-        # final photon hit.
-        total_observing_time = photon_times[-1]
-        # Determine number of frames in observing times by rounding up.
-        n_frames = int((total_observing_time/self.frame_duration).si+1)
-        # Assign photons to HEXITEC frames.
-        n_photons = len(self.incident_photons)
-        photon_indices = np.arange(n_photons)
-        print "Assigning photons to frames."
-        time1 = timeit.default_timer()
-        photon_indices_in_frames = (photon_indices[np.logical_and(
-            photon_times >= self.frame_duration*i,
-            photon_times < self.frame_duration*(i+1))] for i in range(n_frames))
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
-        # Create array of measured photons by masking photons from
-        # incident photons.
-        print "Masking photons."
-        time1 = timeit.default_timer()
-        unmask_indices = [frame[np.argmax(self.incident_photons[frame])]
-                          for frame in photon_indices_in_frames if len(frame) > 0]
-        self.measured_photons = ma.masked_array(self.incident_photons, mask=[1]*n_photons)
-        self.measured_photons.mask[unmask_indices] = 0
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
-
-
-    def simulate_masking_on_photon_list_1pixel_lc(self):
         """
         Simulates "masking" effect in a single HEXITEC pixel on an incident photon list.
 
