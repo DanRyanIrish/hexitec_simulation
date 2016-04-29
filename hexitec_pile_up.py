@@ -146,9 +146,13 @@ class HexitecPileUp():
         # Convert timeseries into measured photon list by resampling
         # at frame rate and taking max.
         # In resample command, '100U' signifies 100 microsecs.
+        print "Converting timeseries in measured photon list."
+        time1 = timeit.default_timer()
         frame_peaks = timeseries.resample("100U", how=max)
         threshold = 0.
         w = np.where(frame_peaks["voltage"] > threshold)[0]
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
         # Determine time unit of pandas timeseries and convert photon
         # times to Quantity.
         photon_times = Quantity(frame_peaks.index[w].values, unit=self.sample_unit).to("s")
@@ -194,7 +198,6 @@ class HexitecPileUp():
         photon_energies = Quantity([self.incident_spectrum["lower_bin_edges"].data[
             bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
             for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
-        time2 = timeit.default_timer()
         # Generate random waiting times before each photon.
         photon_waiting_times = Quantity(
             np.random.exponential(1./self.photon_rate, n_photons), unit='s')
@@ -202,6 +205,7 @@ class HexitecPileUp():
         # observation (time=0) in output table.
         self.incident_photons = Table([photon_waiting_times.cumsum(), photon_energies],
                                       names=("time", "energy"))
+        time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
 
 
@@ -226,15 +230,19 @@ class HexitecPileUp():
         # Find indices in timeseries closest to photon times.
         print "Locating photon indices in timestamps."
         time1 = timeit.default_timer()
-        photon_time_indices = [np.argmin(abs(timestamps-photon_time.value))
-                               for photon_time in self.incident_photons["time"].to(self.sample_unit)]
+        photon_time_indices = np.rint(self.incident_photons["time"].data/sample_step.to(
+            self.incident_photons["time"].unit).value).astype(int)
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
         # Insert photons into timeseries.
+        print "Generating time series."
+        time1 = timeit.default_timer()
         data = np.zeros(len(timestamps))
         data[photon_time_indices] = self.incident_photons["energy"].data
         timeseries = pandas.DataFrame(
                 data, index=pandas.to_timedelta(timestamps, self.sample_unit), columns=["voltage"])
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
         return timeseries
 
 
