@@ -94,19 +94,20 @@ class HexitecPileUp():
         # In resample command, '100U' signifies 100 microsecs.
         print "Converting timeseries in measured photon list."
         time1 = timeit.default_timer()
-        frame_peaks = timeseries.resample("100U", how=max)
+        frame_peaks = timeseries.resample("100U", how=min)
+        # Convert voltages back to photon energies
         threshold = 0.
-        w = np.where(frame_peaks["voltage"] > threshold)[0]
+        w = np.where(frame_peaks["voltage"] < threshold)[0]
+        measured_photon_energies = \
+          self._convert_voltages_to_photon_energy(frame_peaks["voltage"][w].values)
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
         # Determine time unit of pandas timeseries and convert photon
         # times to Quantity.
         photon_times = Quantity(frame_peaks.index[w].values, unit=self.sample_unit).to("s")
         # Combine photon times and energies into measured photon list.
-        self.measured_photons = Table([photon_times,
-                                       Quantity(frame_peaks["voltage"][w],
-                                                unit=self.incident_photons["energy"].unit)],
-                                       names=("time", "energy"))
+        self.measured_photons = Table([photon_times, measured_photon_energies],
+                                      names=("time", "energy"))
 
 
     def generate_random_photons_from_spectrum(self, n_photons):
@@ -170,29 +171,41 @@ class HexitecPileUp():
         print "Generating timestamps."
         time1 = timeit.default_timer()
         timestamps = np.arange(0, n_frames*self.frame_duration.to(self.sample_unit).value,
-                               sample_step.to(self.sample_unit).value)
-        timestamps = timestamps[:-1]
+                               self.sample_step.value)
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
         # Find indices in timeseries closest to photon times.
         print "Locating photon indices in timestamps."
         time1 = timeit.default_timer()
-        photon_time_indices = np.rint(self.incident_photons["time"].data/sample_step.to(
+        photon_time_indices = np.rint(self.incident_photons["time"].data/self.sample_step.to(
             self.incident_photons["time"].unit).value).astype(int)
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
+        # Convert photons to HEXITEC voltage signals.
+        self.voltage_peaking_time = Quantity(2., unit='us').to(self.sample_unit)
+        self.voltage_decay_time = Quantity(8., unit='us').to(self.sample_unit)
+        voltage_pulses = self._convert_photon_energies_to_voltage_bigaussian(
+            self.incident_photons["energy"],
+            self.voltage_peaking_time,
+            self.voltage_decay_time).flatten()
+        # Determine time indices of each value of voltage_hits.
+        voltage_pulse_length = int(np.round(
+            (self.voltage_peaking_time+self.voltage_decay_time)/self.sample_step))
+        voltage_time_indices = np.array([range(photon_time_index, photon_time_index+voltage_pulse_length)
+                                for photon_time_index in photon_time_indices]).flatten()
         # Insert photons into timeseries.
         print "Generating time series."
         time1 = timeit.default_timer()
         data = np.zeros(len(timestamps))
-        data[photon_time_indices] = self.incident_photons["energy"].data
+        data[voltage_time_indices] = voltage_pulses.value
         timeseries = pandas.DataFrame(
             data, index=pandas.to_timedelta(timestamps, self.sample_unit), columns=["voltage"])
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
         return timeseries
 
-    def _convert_photon_energy_to_bigaussian(photon_energy, peaking_time, decay_time):
+
+    def _convert_photon_energies_to_voltage_bigaussian(self, photon_energies, peaking_time, decay_time):
         """
         Models pulse shape of HEXITEC voltage signal in response to a photon as a bi-gaussian.
 
@@ -201,28 +214,35 @@ class HexitecPileUp():
         peaking_time = peaking_time.to(self.sample_unit)
         decay_time = decay_time.to(self.sample_unit)
         # Convert photon energy into peak voltage amplitude.
-        a = self._convert_photon_energy_to_peak_voltage(photon_energy)
+        a = self._convert_photon_energy_to_voltage(photon_energies)
         # Define other Gaussian parameters.
-        mu = np.round(Quantity(2, unit='us').to(self.sample_unit))
+        mu = peaking_time
         zero_equivalent = Quantity(1e-3, unit="V")
-        sigma2_peak = -0.5*mu**2/np.log(zero_equivalent/a)
-        sigma2_decay = -0.5*(peaking_time+decay_time-mu)**2/np.log(zero_equivalent/a)
-        # Determine time and voltage values during peak and decay and
-        # then combine to form one time series.
-        t_peaking = np.arange(
+        sigma2_peaks = -0.5*mu**2/np.log(zero_equivalent.value/abs(a.value))
+        sigma2_decays = \
+          -0.5*(peaking_time+decay_time-mu)**2/np.log(zero_equivalent.value/abs(a.value))
+        # Generate time data points for peak and decay phases.
+        t_peaking = Quantity(np.arange(
             0, peaking_time.value, self.sample_step.value), unit=self.sample_unit)
-        v_peaking = a*np.exp(-(t_peaking-mu).value**2./(2*sigma2_peak.value))
         t_decay = Quantity(np.arange(
             peaking_time.value, peaking_time.value+decay_time.value, self.sample_step.value),
             unit=self.sample_unit)
-        v_decay = a*np.exp(-(t_decay-mu).value**2./(2*sigma2_decay.value))
-        v = Quantity(np.append(v_peaking.value, v_decay.value), unit=v_peaking.unit)
-        return v
+        # Create Quantity holding voltage signal due to each photon hit.
+        # Do this by appending peaking and decay signals in each case.
+        voltage_pulses = Quantity([np.append(
+            a[i].value*np.exp(-(t_peaking-mu).value**2./(2*sigma2_peaks[i].value)),
+            a[i].value*np.exp(-(t_decay-mu).value**2./(2*sigma2_decays[i].value)))
+            for i in range(len(a))], unit=a.unit)
+        return voltage_pulses
 
 
-    def _convert_photon_energy_to_peak_voltage(photon_energy):
+    def _convert_photon_energy_to_voltage(self, photon_energy):
         """Determine peak voltage of HEXITEC shaper due photon of given energy."""
-        return -photon_energy.value*u.V
+        return -photon_energy.data*u.V
+
+    def _convert_voltages_to_photon_energy(self, voltages):
+        """Determine peak voltage of HEXITEC shaper due photon of given energy."""
+        return -voltages*u.keV
 
 
 def test_generate_random_photons_from_spectrum():
@@ -299,7 +319,7 @@ def test_simulate_masking_photon_list_1pixel_lc():
     # simulate_masking_photon_list_1pixel().
     hpu.incident_photons = incident_photons
     #hpu.photon_waiting_times = photon_waiting_times
-    hpu.simulate_masking_on_photon_list_1pixel_lc()
+    hpu.simulate_masking_on_photon_list_1pixel()
     # Assert test photon list is the same as expected photon list.
     assert all(hpu.measured_photons["energy"] == expected_photons["energy"])
     assert 0.*u.s <= all(expected_photons["time"]-hpu.measured_photons["time"]) < hpu.frame_duration
