@@ -21,7 +21,7 @@ class HexitecPileUp():
         """Instantiates a HexitecPileUp object."""
         self.frame_duration = Quantity(1e-4, unit=u.s)
 
-    def simulate_masking_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
+    def simulate_hexitec_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
         """
         Simulates "masking" in a single HEXITEC pixel on a binned incident photon spectrum.
 
@@ -58,7 +58,7 @@ class HexitecPileUp():
         self.generate_random_photons_from_spectrum(n_photons)
         # Mark photons which were recorded and unrecorded using a
         # masked array.  Result recorded in self.measured_photons.
-        self.simulate_masking_on_photon_list_1pixel()
+        self.simulate_hexitec_on_photon_list_1pixel()
         # Convert measured photon list into counts in same bins as the
         # incident spectrum.
         print "Converting masked photon list into spectrum."
@@ -77,7 +77,7 @@ class HexitecPileUp():
             meta={"info" : "Counts measured by HEXITEC after accounting for masking."})
 
 
-    def simulate_masking_on_photon_list_1pixel(self):
+    def simulate_hexitec_on_photon_list_1pixel(self):
         """
         Simulates "masking" effect in a single HEXITEC pixel on an incident photon list.
 
@@ -108,6 +108,59 @@ class HexitecPileUp():
         # Combine photon times and energies into measured photon list.
         self.measured_photons = Table([photon_times, measured_photon_energies],
                                       names=("time", "energy"))
+
+        def simulate_masking_on_photon_list_1pixel(self):
+            """
+            Simulates "masking" effect in a single HEXITEC pixel on an incident photon list.
+
+            This simulation is a 1st order approximation of the effect of pile up.
+            It assumes than only the most energetic photon incident on the
+            detector within the period of a single frame is recorded.
+
+            Parameters
+            ----------
+            self.incident_photons : `astropy.units.quantity.Quantity`
+              Array of each sequential photon falling of the HEXITEC pixel.
+            self.photon_waiting_times : `astropy.units.quantity.Quantity`
+              The time between each photon hit.  Note must therefore have length
+              1 less than incident_photons.
+            first_photon_offset : `astropy.units.quantity.Quantity`
+              Delay from start of first observing frame of HEXITEC detector until
+              first photon hit.  Default=0s.
+
+            Returns
+            -------
+            self.measured_photons : masked_Quantity
+              Incident photon list with unrecorded photons masked.
+
+            """
+            # Determine time of each photon hit from start of observing time.
+            photon_times = self.first_photon_offset+self.photon_waiting_times.cumsum()
+            # Determine length of time from start of observation to time of
+            # final photon hit.
+            total_observing_time = photon_times[-1]
+            # Determine number of frames in observing times by rounding up.
+            n_frames = int((total_observing_time/self.frame_duration).si+1)
+            # Assign photons to HEXITEC frames.
+            n_photons = len(self.incident_photons)
+            photon_indices = np.arange(n_photons)
+            print "Assigning photons to frames."
+            time1 = timeit.default_timer()
+            photon_indices_in_frames = (photon_indices[np.logical_and(
+                photon_times >= self.frame_duration*i,
+                photon_times < self.frame_duration*(i+1))] for i in range(n_frames))
+            time2 = timeit.default_timer()
+            print "Finished in {0} s.".format(time2-time1)
+            # Create array of measured photons by masking photons from
+            # incident photons.
+            print "Masking photons."
+            time1 = timeit.default_timer()
+            unmask_indices = [frame[np.argmax(self.incident_photons[frame])]
+                              for frame in photon_indices_in_frames if len(frame) > 0]
+            self.measured_photons = ma.masked_array(self.incident_photons, mask=[1]*n_photons)
+            self.measured_photons.mask[unmask_indices] = 0
+            time2 = timeit.default_timer()
+            print "Finished in {0} s.".format(time2-time1)
 
 
     def generate_random_photons_from_spectrum(self, n_photons):
@@ -303,7 +356,7 @@ def test_simulate_masking_photon_list_1pixel():
     assert expected_photons.data.unit == hpu.measured_photons.data.unit
 
 
-def test_simulate_masking_photon_list_1pixel_lc():
+def test_simulate_hexitec_on_photon_list_1pixel():
     """Test simulate_masking_photon_list_1pixel()."""
     # Define a HexitecPileUp object.
     hpu = HexitecPileUp()
@@ -323,3 +376,26 @@ def test_simulate_masking_photon_list_1pixel_lc():
     # Assert test photon list is the same as expected photon list.
     assert all(hpu.measured_photons["energy"] == expected_photons["energy"])
     assert 0.*u.s <= all(expected_photons["time"]-hpu.measured_photons["time"]) < hpu.frame_duration
+
+
+def test_simulate_masking_photon_list_1pixel():
+    """Test simulate_masking_photon_list_1pixel()."""
+    # Define a HexitecPileUp object.
+    hpu = HexitecPileUp()
+    # Define input photon list and waiting times.
+    incident_photons = Quantity([1, 1, 2, 3, 5, 4, 6], unit=u.keV)
+    first_photon_offset = Quantity([0.], unit=u.s)
+    photon_waiting_times = first_photon_offset + Quantity(
+        np.array([0., 0.5, 0.5, 0.5, 0.5, 0.5, 2.5])*hpu.frame_duration, unit=u.s)
+    # Define expected output photon list.
+    expected_photons = np.ma.masked_array(incident_photons, mask=[0,1,1,0,0,1,0])
+    # Calculate test measured photon list by calling
+    # simulate_masking_photon_list_1pixel().
+    hpu.first_photon_offset = first_photon_offset
+    hpu.incident_photons = incident_photons
+    hpu.photon_waiting_times = photon_waiting_times
+    hpu.simulate_masking_on_photon_list_1pixel()
+    # Assert test photon list is the same as expected photon list.
+    np.testing.assert_array_equal(expected_photons.data, hpu.measured_photons.data)
+    np.testing.assert_array_equal(expected_photons.mask, hpu.measured_photons.mask)
+    assert expected_photons.data.unit == hpu.measured_photons.data.unit
