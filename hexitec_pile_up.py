@@ -161,6 +161,7 @@ class HexitecPileUp():
         # timeseries.  This unit must be in string format to be
         # usable for astropy Quanities and pandas timedelta.
         self.sample_unit = 'ns'
+        self.sample_step = sample_step.to(self.sample_unit)
         # Calculate number of frames and sample points in timeseries.
         total_observing_time = self.incident_photons["time"][-1]*self.incident_photons["time"].unit
         n_frames = int(total_observing_time.to(self.sample_unit).value/self.frame_duration.to(self.sample_unit).value+2)
@@ -186,10 +187,42 @@ class HexitecPileUp():
         data = np.zeros(len(timestamps))
         data[photon_time_indices] = self.incident_photons["energy"].data
         timeseries = pandas.DataFrame(
-                data, index=pandas.to_timedelta(timestamps, self.sample_unit), columns=["voltage"])
+            data, index=pandas.to_timedelta(timestamps, self.sample_unit), columns=["voltage"])
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
         return timeseries
+
+    def _convert_photon_energy_to_bigaussian(photon_energy, peaking_time, decay_time):
+        """
+        Models pulse shape of HEXITEC voltage signal in response to a photon as a bi-gaussian.
+
+        """
+        # Convert input peaking and decay times to a standard unit.
+        peaking_time = peaking_time.to(self.sample_unit)
+        decay_time = decay_time.to(self.sample_unit)
+        # Convert photon energy into peak voltage amplitude.
+        a = self._convert_photon_energy_to_peak_voltage(photon_energy)
+        # Define other Gaussian parameters.
+        mu = np.round(Quantity(2, unit='us').to(self.sample_unit))
+        zero_equivalent = Quantity(1e-3, unit="V")
+        sigma2_peak = -0.5*mu**2/np.log(zero_equivalent/a)
+        sigma2_decay = -0.5*(peaking_time+decay_time-mu)**2/np.log(zero_equivalent/a)
+        # Determine time and voltage values during peak and decay and
+        # then combine to form one time series.
+        t_peaking = np.arange(
+            0, peaking_time.value, self.sample_step.value), unit=self.sample_unit)
+        v_peaking = a*np.exp(-(t_peaking-mu).value**2./(2*sigma2_peak.value))
+        t_decay = Quantity(np.arange(
+            peaking_time.value, peaking_time.value+decay_time.value, self.sample_step.value),
+            unit=self.sample_unit)
+        v_decay = a*np.exp(-(t_decay-mu).value**2./(2*sigma2_decay.value))
+        v = Quantity(np.append(v_peaking.value, v_decay.value), unit=v_peaking.unit)
+        return v
+
+
+    def _convert_photon_energy_to_peak_voltage(photon_energy):
+        """Determine peak voltage of HEXITEC shaper due photon of given energy."""
+        return -photon_energy.value*u.V
 
 
 def test_generate_random_photons_from_spectrum():
