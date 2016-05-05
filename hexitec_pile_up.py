@@ -4,6 +4,7 @@ import random
 import warnings
 import math
 import timeit
+from datetime import datetime
 
 import numpy as np
 from numpy import ma
@@ -92,6 +93,71 @@ class HexitecPileUp():
              self.incident_spectrum["upper_bin_edges"], measured_counts],
             names=("lower_bin_edges", "upper_bin_edges", "counts"))
 
+
+    def generate_random_photons_from_spectrum(self, incident_spectrum, photon_rate, n_photons):
+        """Converts an input photon spectrum to a probability distribution.
+
+        Parameters
+        ----------
+        incident_spectrum : `astropy.table.Table`
+          Incident photon spectrum.  Table has following columns:
+            lower_bin_edges : `astropy.units.quantity.Quantity`
+            upper_bin_edges : `astropy.units.quantity.Quantity`
+            counts : array-like
+        photon_rate : `astropy.units.quantity.Quantity`
+          Average rate at which photons hit the pixel.
+        n_photons : `int`
+          Total number of random counts to be generated.
+
+        Returns
+        -------
+        photons : `astropy.table.Table`
+          Table of photons incident on the pixel.  Contains the following columns
+          time : Amount of time passed from beginning of observing
+            until photon hit.
+          energy : Energy of each photon.
+        self.incident_spectrum : `astropy.table.Table`
+          Same as input incident_spectrum.
+        self.photon_rate : `astropy.units.quantity.Quantity`
+          Same as input photon_rate.
+
+        """
+        self.incident_spectrum = incident_spectrum
+        if type(photon_rate) is not Quantity:
+            raise TypeError("photon_rate must be an astropy.units.quantity.Quantity")
+        self.photon_rate = photon_rate
+        n_counts = int(n_photons)
+        # Calculate cumulative density function of spectrum for lower and
+        # upper edges of spectral bins.
+        cdf_upper = np.cumsum(self.incident_spectrum["counts"])
+        cdf_lower = np.insert(cdf_upper, 0, 0.)
+        cdf_lower = np.delete(cdf_lower, -1)
+        # Generate random numbers representing CDF values.
+        print "Generating random numbers for photon energy transformation."
+        time1 = timeit.default_timer()
+        randoms = np.asarray([random.random() for i in range(n_counts)])*cdf_upper[-1]
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
+        # Generate array of spectrum bin indices.
+        print "Transforming random numbers into photon energies."
+        time1 = timeit.default_timer()
+        bin_indices = np.arange(len(self.incident_spectrum["lower_bin_edges"]))
+        # Generate random energies from randomly generated CDF values.
+        photon_energies = Quantity([self.incident_spectrum["lower_bin_edges"].data[
+            bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
+            for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
+        # Generate random waiting times before each photon.
+        photon_waiting_times = Quantity(
+            np.random.exponential(1./self.photon_rate, n_photons), unit='s')
+        # Associate photon energies and time since start of
+        # observation (time=0) in output table.
+        photons = Table([photon_waiting_times.cumsum(), photon_energies],
+                        names=("time", "energy"))
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
+        return photons
+
+
     def simulate_hexitec_on_photon_list_1pixel(self, incident_photons):
         """
         Simulates how HEXITEC records incoming photons in a single pixel.
@@ -138,9 +204,9 @@ class HexitecPileUp():
         # Use for loop to analyse each sub timeseries.
         print "Photons will be analysed in {0} sub-timeseries.".format(len(subseries_edges)-1)
         for i in range(len(subseries_edges)-1):
-            print "Processing subseries {0} of {1}".format(i+1, len(subseries_edges)-1)
+            print "Processing subseries {0} of {1} at {2}".format(
+                i+1, len(subseries_edges)-1, datetime.now())
             time1 = timeit.default_timer()
-
             # Determine which photons are in current subseries.  Include
             # photons in the frames either side of the subseries edges
             # as their voltage pulses may influence the first and last
@@ -166,7 +232,7 @@ class HexitecPileUp():
             measured_photon_energies = np.append(
                 measured_photon_energies, subseries_measured_photon_energies.value[w])
             time2 = timeit.default_timer()
-            print "Finished {0}th subseries in {1}".format(i+1, time2-time1)
+            print "Finished {0}th subseries in {1} s".format(i+1, time2-time1)
             print " "
         # Convert results into table and attach to object.
         self.measured_photons = Table(
@@ -176,115 +242,22 @@ class HexitecPileUp():
 
 
     def _convert_voltage_timeseries_to_measured_photons(self, timeseries):
-        """
-        Simulates how HEXITEC records incoming photons in a single pixel.
-
-        Given a list of photons entering the pixel, this function simulates the
-        voltage vs. time timeseries in the HEXITEC ASIC caused by the photon hits.
-        From that, it then determines the measured photon list.  This simulation
-        includes effects "masking" and "pulse pile up".  It assumes that the photon
-        waiting times are distributed exponentially with an average rate of
-        photon_rate.
-
-        Parameters
-        ----------
-        incident_photons : `astropy.table.Table`
-          Table of photons incident on the pixel.  Contains the following columns
-          time : Amount of time passed from beginning of observing until photon hit.
-          energy : Energy of each photon.
-
-        Returns
-        -------
-        self.measured_photons : `astropy.table.Table`
-          Photon list as measured by HEXITEC.  Table format same as incident_photons.
-        self.incident_photons : `astropy.table.Table`
-          Same as input incident_photons.
-
-        """
-        print "Time series length = {0}".format(len(timeseries))
+        """Converts a time series of HEXITEC voltage to measured photons."""
         # Convert timeseries into measured photon list by resampling
         # at frame rate and taking max.
         # In resample command, '100U' signifies 100 microsecs.
-        print "Converting timeseries in measured photon list."
-        time1 = timeit.default_timer()
         frame_peaks = timeseries.resample("100U", how=min)
         # Convert voltages back to photon energies
         threshold = 0.
         w = np.where(frame_peaks["voltage"] < threshold)[0]
         measured_photon_energies = self._convert_voltages_to_photon_energy(
             frame_peaks["voltage"][w].values).to(self.incident_photons["energy"].unit)
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
         # Determine time unit of pandas timeseries and convert photon
         # times to Quantity.
         measured_photon_times = Quantity(frame_peaks.index[w].values,
                                 unit=self._sample_unit).to(self.incident_photons["time"].unit)
         # Combine photon times and energies into measured photon list.
         return measured_photon_times, measured_photon_energies
-
-
-    def generate_random_photons_from_spectrum(self, incident_spectrum, photon_rate, n_photons):
-        """Converts an input photon spectrum to a probability distribution.
-
-        Parameters
-        ----------
-        incident_spectrum : `astropy.table.Table`
-          Incident photon spectrum.  Table has following columns:
-            lower_bin_edges : `astropy.units.quantity.Quantity`
-            upper_bin_edges : `astropy.units.quantity.Quantity`
-            counts : array-like
-        photon_rate : `astropy.units.quantity.Quantity`
-          Average rate at which photons hit the pixel.
-        n_photons : `int`
-          Total number of random counts to be generated.
-
-        Returns
-        -------
-        photons : `astropy.table.Table`
-          Table of photons incident on the pixel.  Contains the following columns
-          time : Amount of time passed from beginning of observing
-            until photon hit.
-          energy : Energy of each photon.
-        self.incident_spectrum : `astropy.table.Table`
-          Same as input incident_spectrum.
-        self.photon_rate : `astropy.units.quantity.Quantity`
-          Same as input photon_rate.
-        
-        """
-        self.incident_spectrum = incident_spectrum
-        if type(photon_rate) is not Quantity:
-            raise TypeError("photon_rate must be an astropy.units.quantity.Quantity")
-        self.photon_rate = photon_rate
-        n_counts = int(n_photons)
-        # Calculate cumulative density function of spectrum for lower and
-        # upper edges of spectral bins.
-        cdf_upper = np.cumsum(self.incident_spectrum["counts"])
-        cdf_lower = np.insert(cdf_upper, 0, 0.)
-        cdf_lower = np.delete(cdf_lower, -1)
-        # Generate random numbers representing CDF values.
-        print "Generating random numbers for photon energy transformation."
-        time1 = timeit.default_timer()
-        randoms = np.asarray([random.random() for i in range(n_counts)])*cdf_upper[-1]
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
-        # Generate array of spectrum bin indices.
-        print "Transforming random numbers into photon energies."
-        time1 = timeit.default_timer()
-        bin_indices = np.arange(len(self.incident_spectrum["lower_bin_edges"]))
-        # Generate random energies from randomly generated CDF values.
-        photon_energies = Quantity([self.incident_spectrum["lower_bin_edges"].data[
-            bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
-            for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
-        # Generate random waiting times before each photon.
-        photon_waiting_times = Quantity(
-            np.random.exponential(1./self.photon_rate, n_photons), unit='s')
-        # Associate photon energies and time since start of
-        # observation (time=0) in output table.
-        photons = Table([photon_waiting_times.cumsum(), photon_energies],
-                        names=("time", "energy"))
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
-        return photons
 
 
     def _convert_photons_to_voltage_timeseries(self, incident_photons, series_start, n_frames):
@@ -310,8 +283,6 @@ class HexitecPileUp():
         # to same time index) combine them as though they were one
         # photon with an energy equal to the sum of the simultaneous
         # photons.
-        print "Checking for simultaneous photon hits."
-        time1 = timeit.default_timer()
         non_simul_photon_times, non_simul_photon_time_indices, n_incident_photons_per_index = \
           np.unique(incident_photons["time"], return_index=True, return_counts=True)
         non_simul_photon_time_indices = np.sort(non_simul_photon_time_indices)
@@ -323,8 +294,6 @@ class HexitecPileUp():
                for i in w]
         else:
             combined_photons = incident_photons
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
         # Convert photon energies to voltage delta functions.
         voltage_deltas = \
           self._convert_photon_energy_to_voltage(combined_photons["energy"])
@@ -346,19 +315,11 @@ class HexitecPileUp():
         end_index = int(np.rint(self.voltage_decay_time/self._sample_step))*(-1)+1
         voltage = voltage[start_index:end_index]
         # Define timestamps for timeseries.
-        print "Generating timestamps."
-        time1 = timeit.default_timer()
         timestamps = np.arange(0, n_samples*sample_step.value, sample_step.value) + \
           series_start.to(self._sample_unit).value
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
         # Generate time series from voltage and timestamps.
-        print "Generating time series."
-        time1 = timeit.default_timer()
         timeseries = pandas.DataFrame(
             voltage, index=pandas.to_timedelta(timestamps, self._sample_unit), columns=["voltage"])
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
         return timeseries
 
 
@@ -392,48 +353,6 @@ class HexitecPileUp():
     def _convert_voltages_to_photon_energy(self, voltages):
         """Determines photon energy from HEXITEC peak voltage."""
         return -voltages*u.keV
-
-
-    def _convert_photon_energies_to_voltage_bigaussian(self, photon_energies):
-        """Models pulse shape of HEXITEC voltage in response to a photon as a bi-gaussian.
-
-        Parameters
-        ----------
-        photon_energies : array-like
-          Energies of photons
-        
-        Returns
-        -------
-        voltage_pulses : `astropy.units.quantity.Quantity`
-          Quantity of nested arrays.  Each nested array gives the voltage
-          time series values corresponding to an individual photon hit.
-
-        """
-        sample_step = self._sample_step.to(self._sample_unit)
-        # Convert input peaking and decay times to a standard unit.
-        voltage_peaking_time = self.voltage_peaking_time.to(self._sample_unit)
-        voltage_decay_time = self.voltage_decay_time.to(self._sample_unit)
-        # Convert photon energy into peak voltage amplitude.
-        a = self._convert_photon_energy_to_voltage(photon_energies)
-        # Define other Gaussian parameters.
-        mu = voltage_peaking_time
-        zero_equivalent = Quantity(1e-3, unit="V")
-        sigma2_peaks = -0.5*mu**2/np.log(zero_equivalent.value/abs(a.value))
-        sigma2_decays = -0.5*(voltage_peaking_time+voltage_decay_time-mu)**2/ \
-          np.log(zero_equivalent.value/abs(a.value))
-        # Generate time data points for peak and decay phases.
-        t_peaking = Quantity(np.arange(
-            0, voltage_peaking_time.value, self._sample_step.value), unit=self._sample_unit)
-        t_decay = Quantity(np.arange(voltage_peaking_time.value,
-                                     voltage_peaking_time.value+voltage_decay_time.value,
-                                     self._sample_step.value), unit=self._sample_unit)
-        # Create Quantity holding voltage signal due to each photon hit.
-        # Do this by appending peaking and decay signals in each case.
-        voltage_pulses = Quantity([np.append(
-            a[i].value*np.exp(-(t_peaking-mu).value**2./(2*sigma2_peaks[i].value)),
-            a[i].value*np.exp(-(t_decay-mu).value**2./(2*sigma2_decays[i].value)))
-            for i in range(len(a))], unit=a.unit)
-        return voltage_pulses
 
 
     def simulate_masking_on_photon_list_1pixel(self):
