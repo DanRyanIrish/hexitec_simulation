@@ -24,6 +24,7 @@ class HexitecPileUp():
         self.voltage_peaking_time = Quantity(2., unit='us').to(self._sample_unit)
         self.voltage_decay_time = Quantity(8., unit='us').to(self._sample_unit)
         self.frame_duration = Quantity(1e-4, unit=u.s)
+        self._voltage_pulse_shape = self._define_voltage_pulse_shape()
 
 
     def simulate_hexitec_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
@@ -141,60 +142,6 @@ class HexitecPileUp():
         self.timeseries = timeseries
 
 
-    def simulate_masking_on_photon_list_1pixel(self):
-        """
-        Simulates "masking" effect in a single HEXITEC pixel on an incident photon list.
-
-        This simulation is a 1st order approximation of the effect of pile up.
-        It assumes than only the most energetic photon incident on the
-        detector within the period of a single frame is recorded.
-
-        Parameters
-        ----------
-        self.incident_photons : `astropy.units.quantity.Quantity`
-          Array of each sequential photon falling of the HEXITEC pixel.
-        self.photon_waiting_times : `astropy.units.quantity.Quantity`
-          The time between each photon hit.  Note must therefore have length
-          1 less than incident_photons.
-        first_photon_offset : `astropy.units.quantity.Quantity`
-          Delay from start of first observing frame of HEXITEC detector until
-          first photon hit.  Default=0s.
-
-        Returns
-        -------
-        self.measured_photons : masked_Quantity
-          Incident photon list with unrecorded photons masked.
-
-        """
-        # Determine time of each photon hit from start of observing time.
-        photon_times = self.first_photon_offset+self.photon_waiting_times.cumsum()
-        # Determine length of time from start of observation to time of
-        # final photon hit.
-        total_observing_time = photon_times[-1]
-        # Determine number of frames in observing times by rounding up.
-        n_frames = int((total_observing_time/self.frame_duration).si+1)
-        # Assign photons to HEXITEC frames.
-        n_photons = len(self.incident_photons)
-        photon_indices = np.arange(n_photons)
-        print "Assigning photons to frames."
-        time1 = timeit.default_timer()
-        photon_indices_in_frames = (photon_indices[np.logical_and(
-            photon_times >= self.frame_duration*i,
-            photon_times < self.frame_duration*(i+1))] for i in range(n_frames))
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
-        # Create array of measured photons by masking photons from
-        # incident photons.
-        print "Masking photons."
-        time1 = timeit.default_timer()
-        unmask_indices = [frame[np.argmax(self.incident_photons[frame])]
-                          for frame in photon_indices_in_frames if len(frame) > 0]
-        self.measured_photons = ma.masked_array(self.incident_photons, mask=[1]*n_photons)
-        self.measured_photons.mask[unmask_indices] = 0
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
-
-
     def generate_random_photons_from_spectrum(self, incident_spectrum, photon_rate, n_photons):
         """Converts an input photon spectrum to a probability distribution.
 
@@ -275,40 +222,96 @@ class HexitecPileUp():
         # Calculate number of frames and sample points in timeseries.
         total_observing_time = (self.incident_photons["time"][-1]* \
                                 self.incident_photons["time"].unit).to(self._sample_unit)
-        n_frames = int(total_observing_time.value/frame_duration.value+2)
-        # Define timestamps for timeseries from number of frames and
-        # sample points.
-        print "Generating timestamps."
+        n_frames = np.rint(total_observing_time.value/frame_duration.value)+1
+        n_samples = int(np.rint(n_frames*frame_duration.value/sample_step.value))
+        total_observing_time = n_samples*sample_step
+        # If there are simulataneous photon hits (i.e. photons assigned
+        # to same time index) combine them as though they were one
+        # photon with an energy equal to the sum of the simultaneous
+        # photons.
+        print "Checking for simultaneous photon hits."
         time1 = timeit.default_timer()
-        timestamps = np.arange(0, n_frames*frame_duration.value, sample_step.value)
+        non_simul_photon_times, non_simul_photon_time_indices, n_incident_photons_per_index = \
+          np.unique(self.incident_photons["time"], return_index=True, return_counts=True)
+        non_simul_photon_time_indices = np.sort(non_simul_photon_time_indices)
+        if max(n_incident_photons_per_index) > 1:
+            w = np.where(n_incident_photons_per_index > 1)[0]
+            combined_photons = self.incident_photons[non_simul_photon_time_indices]
+            combined_photons["energy"][w] = \
+              [sum(self.incident_photons["energy"][i:i+n_incident_photons_per_index[i]])
+               for i in w]
+        else:
+            combined_photons = self.incident_photons
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
+        # Convert photon energies to voltage delta functions.
+        voltage_deltas = \
+          self._convert_photon_energy_to_voltage(combined_photons["energy"])
+        # Create time series of voltage from voltage deltas.
         # Find indices in timeseries closest to photon times.
         print "Locating photon indices in timestamps."
         time1 = timeit.default_timer()
-        photon_time_indices = np.rint(self.incident_photons["time"].data/sample_step.to(
-            self.incident_photons["time"].unit).value).astype(int)
+        photon_time_indices = np.rint(combined_photons["time"].data/sample_step.to(
+            combined_photons["time"].unit).value).astype(int)
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
-        # Convert photons to HEXITEC voltage signals.
-        voltage_pulses = self._convert_photon_energies_to_voltage_bigaussian(
-            self.incident_photons["energy"])
-        # Determine time indices of each value of voltage_hits.
-        voltage_pulse_length = int(np.round(
-            (self.voltage_peaking_time+self.voltage_decay_time)/sample_step))
-        voltage_time_indices = np.array(
-            [range(photon_time_index, photon_time_index+voltage_pulse_length)
-             for photon_time_index in photon_time_indices])
-        # Insert photons into timeseries.
+        # Create time series of voltage delta functions.
+        voltage_delta_timeseries = np.zeros(n_samples)
+        voltage_delta_timeseries[photon_time_indices] = voltage_deltas.value
+        # Convolve voltage delta function time series with voltage
+        # pulse shape.
+        voltage = np.convolve(voltage_delta_timeseries, self._voltage_pulse_shape)
+        # Trim edges of convolved time series so that peaks of voltage
+        # pulses align with photon times.
+        start_index = int(np.rint(self.voltage_peaking_time/self._sample_step))
+        end_index = int(np.rint(self.voltage_decay_time/self._sample_step))*(-1)+1
+        voltage = voltage[start_index:end_index]
+        # Define timestamps for timeseries.
+        print "Generating timestamps."
+        time1 = timeit.default_timer()
+        timestamps = np.arange(0, total_observing_time.value, sample_step.value)
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
+        # Generate time series from voltage and timestamps.
         print "Generating time series."
         time1 = timeit.default_timer()
-        data = np.zeros(len(timestamps))
-        data[voltage_time_indices] = voltage_pulses.value
         timeseries = pandas.DataFrame(
-            data, index=pandas.to_timedelta(timestamps, self._sample_unit), columns=["voltage"])
+            voltage, index=pandas.to_timedelta(timestamps, self._sample_unit), columns=["voltage"])
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
         return timeseries
+
+
+    def _define_voltage_pulse_shape(self):
+        """Defines the normalised shape of voltage pulse with given discrete sampling frequency."""
+        sample_step = self._sample_step.to(self._sample_unit).value
+        # Convert input peaking and decay times to a standard unit.
+        voltage_peaking_time = self.voltage_peaking_time.to(self._sample_unit).value
+        voltage_decay_time = self.voltage_decay_time.to(self._sample_unit).value
+        # Define other Gaussian parameters.
+        mu = voltage_peaking_time
+        zero_equivalent = 1e-3
+        sigma2_peak = -0.5*mu**2/np.log(zero_equivalent)
+        sigma2_decay = \
+          -0.5*(voltage_peaking_time+voltage_decay_time-mu)**2/np.log(zero_equivalent)
+        # Generate time data points for peak and decay phases.
+        t_peaking = np.arange(0, voltage_peaking_time, sample_step)
+        t_decay = np.arange(voltage_peaking_time,
+                            voltage_peaking_time+voltage_decay_time,
+                            sample_step)
+        voltage_pulse_shape = np.append(np.exp(-(t_peaking-mu)**2./(2*sigma2_peak)),
+                                        np.exp(-(t_decay-mu)**2./(2*sigma2_decay)))
+        return voltage_pulse_shape
+
+
+    def _convert_photon_energy_to_voltage(self, photon_energy):
+        """Determines HEXITEC peak voltage due photon of given energy."""
+        return -photon_energy.data*u.V
+
+
+    def _convert_voltages_to_photon_energy(self, voltages):
+        """Determines photon energy from HEXITEC peak voltage."""
+        return -voltages*u.keV
 
 
     def _convert_photon_energies_to_voltage_bigaussian(self, photon_energies):
@@ -353,13 +356,58 @@ class HexitecPileUp():
         return voltage_pulses
 
 
-    def _convert_photon_energy_to_voltage(self, photon_energy):
-        """Determines HEXITEC peak voltage due photon of given energy."""
-        return -photon_energy.data*u.V
+    def simulate_masking_on_photon_list_1pixel(self):
+        """
+        Simulates "masking" effect in a single HEXITEC pixel on an incident photon list.
 
-    def _convert_voltages_to_photon_energy(self, voltages):
-        """Determines photon energy from HEXITEC peak voltage."""
-        return -voltages*u.keV
+        This simulation is a 1st order approximation of the effect of pile up.
+        It assumes than only the most energetic photon incident on the
+        detector within the period of a single frame is recorded.
+
+        Parameters
+        ----------
+        self.incident_photons : `astropy.units.quantity.Quantity`
+          Array of each sequential photon falling of the HEXITEC pixel.
+        self.photon_waiting_times : `astropy.units.quantity.Quantity`
+          The time between each photon hit.  Note must therefore have length
+          1 less than incident_photons.
+        first_photon_offset : `astropy.units.quantity.Quantity`
+          Delay from start of first observing frame of HEXITEC detector until
+          first photon hit.  Default=0s.
+
+        Returns
+        -------
+        self.measured_photons : masked_Quantity
+          Incident photon list with unrecorded photons masked.
+
+        """
+        # Determine time of each photon hit from start of observing time.
+        photon_times = self.first_photon_offset+self.photon_waiting_times.cumsum()
+        # Determine length of time from start of observation to time of
+        # final photon hit.
+        total_observing_time = photon_times[-1]
+        # Determine number of frames in observing times by rounding up.
+        n_frames = int((total_observing_time/self.frame_duration).si+1)
+        # Assign photons to HEXITEC frames.
+        n_photons = len(self.incident_photons)
+        photon_indices = np.arange(n_photons)
+        print "Assigning photons to frames."
+        time1 = timeit.default_timer()
+        photon_indices_in_frames = (photon_indices[np.logical_and(
+            photon_times >= self.frame_duration*i,
+            photon_times < self.frame_duration*(i+1))] for i in range(n_frames))
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
+        # Create array of measured photons by masking photons from
+        # incident photons.
+        print "Masking photons."
+        time1 = timeit.default_timer()
+        unmask_indices = [frame[np.argmax(self.incident_photons[frame])]
+                          for frame in photon_indices_in_frames if len(frame) > 0]
+        self.measured_photons = ma.masked_array(self.incident_photons, mask=[1]*n_photons)
+        self.measured_photons.mask[unmask_indices] = 0
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
 
 
 
@@ -426,20 +474,22 @@ def test_simulate_hexitec_on_photon_list_1pixel():
     # Define a HexitecPileUp object.
     hpu = HexitecPileUp()
     # Define input photon list and waiting times.
-    photon_energies = Quantity([1, 1, 2, 3, 5, 4, 6, 7, 8], unit=u.keV)
-    photon_waiting_times = Quantity(
-        np.array([0., 0.5, 0.5, 0.5, 0.5, 0.5, 2.5, 1., 0.])*hpu.frame_duration, unit=u.s)
-    incident_photons = Table([photon_waiting_times.cumsum(), photon_energies], names=("time", "energy"))
+    photon_energies = Quantity([1, 1, 2, 3, 5, 4, 6, 7, 8, 9], unit=u.keV)
+    photon_times = Quantity(np.array(
+        [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 4.5, 6., 7.5, 7.5])*hpu.frame_duration, unit=u.s)
+    incident_photons = Table([photon_times, photon_energies], names=("time", "energy"))
     # Define expected output photon list.
-    expected_indices = [0, 3, 4, 6, 7]
-    expected_photons = incident_photons[expected_indices]
-    expected_photons["energy"][4] = (photon_energies[7]+photon_energies[8]).value
+    f = hpu._voltage_pulse_shape[
+        np.where(hpu._voltage_pulse_shape == max(hpu._voltage_pulse_shape))[0][0]-1]
+    expected_energies = Quantity([1, 3, 5, 6, 7*f, 7, 17], unit=u.keV)
+    expected_times = Quantity(np.array([0., 1., 2., 4., 5., 6., 7.])*hpu.frame_duration, unit=u.s)
+    expected_photons = Table([expected_times, expected_energies], names=("time", "energy"))
     # Calculate test measured photon list by calling
     # simulate_hexitec_photon_list_1pixel().
     hpu.simulate_hexitec_on_photon_list_1pixel(incident_photons)
     # Assert test photon list is the same as expected photon list.
+    assert all(hpu.measured_photons["time"] == expected_photons["time"])
     assert all(hpu.measured_photons["energy"] == expected_photons["energy"])
-    assert 0.*u.s <= all(expected_photons["time"]-hpu.measured_photons["time"]) < hpu.frame_duration
 
 
 def test_simulate_masking_photon_list_1pixel():
