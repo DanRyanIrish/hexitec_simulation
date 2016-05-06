@@ -80,18 +80,10 @@ class HexitecPileUp():
         self.simulate_hexitec_on_photon_list_1pixel(incident_photons)
         # Convert measured photon list into counts in same bins as the
         # incident spectrum.
-        print "Converting masked photon list into spectrum."
-        time1 = timeit.default_timer()
-        bins = list(self.incident_spectrum["lower_bin_edges"])
-        bins.append(self.incident_spectrum["upper_bin_edges"][-1])
-        measured_counts = np.histogram(self.measured_photons["energy"], bins=bins)[0]
-        time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
+        bin_edges = list(self.incident_spectrum["lower_bin_edges"])
+        bin_edges.append(self.incident_spectrum["upper_bin_edges"][-1])
         # Return an astropy table of the measured spectrum.
-        self.measured_spectrum = Table(
-            [self.incident_spectrum["lower_bin_edges"],
-             self.incident_spectrum["upper_bin_edges"], measured_counts],
-            names=("lower_bin_edges", "upper_bin_edges", "counts"))
+        self._convert_photon_list_to_spectrum(bin_edges)
 
 
     def generate_random_photons_from_spectrum(self, incident_spectrum, photon_rate, n_photons):
@@ -353,6 +345,21 @@ class HexitecPileUp():
     def _convert_voltages_to_photon_energy(self, voltages):
         """Determines photon energy from HEXITEC peak voltage."""
         return -voltages*u.keV
+
+    def _convert_photon_list_to_spectrum(self, bins_edges):
+        """Creates a histogram of a photon list and attaches it to the object.
+
+        Parameters
+        ----------
+        bin_edges : sequences of scalars
+          Defines bin edges.  Note therefore that length of bin_edges on number
+          of bins + 1.
+        """
+        measured_counts = np.histogram(self.measured_photons["energy"], bins=bins)[0]
+        self.measured_spectrum = Table(
+            [self.incident_spectrum["lower_bin_edges"],
+             self.incident_spectrum["upper_bin_edges"], measured_counts],
+            names=("lower_bin_edges", "upper_bin_edges", "counts"))
 
 
     def simulate_masking_on_photon_list_1pixel(self):
