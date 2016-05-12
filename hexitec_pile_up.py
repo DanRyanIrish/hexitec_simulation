@@ -19,7 +19,7 @@ DATAFRAME_MAX_POINTS = 1e7
 class HexitecPileUp():
     """Simulates how HEXITEC records incident photons."""
 
-    def __init__(self):
+    def __init__(self, frame_rate=Quantity(3900., unit=1/u.s)):
         """Instantiates a HexitecPileUp object."""
         # Define some magic numbers. N.B. _sample_unit must be in string
         # format so it can be used for Quantities and numpy datetime64.
@@ -27,7 +27,7 @@ class HexitecPileUp():
         self._sample_step = Quantity(100., unit='ns')
         self.voltage_peaking_time = Quantity(2., unit='us').to(self._sample_unit)
         self.voltage_decay_time = Quantity(8., unit='us').to(self._sample_unit)
-        self.frame_duration = Quantity(1e-4, unit=u.s)
+        self.frame_duration = 1./frame_rate
         self._voltage_pulse_shape = self._define_voltage_pulse_shape()
 
 
@@ -312,7 +312,6 @@ class HexitecPileUp():
         # Generate time series from voltage and timestamps.
         timeseries = pandas.DataFrame(
             voltage, index=pandas.to_timedelta(timestamps, self._sample_unit), columns=["voltage"])
-        self.timeseries = timeseries
         return timeseries
 
 
