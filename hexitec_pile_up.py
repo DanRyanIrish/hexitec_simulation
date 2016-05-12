@@ -246,8 +246,11 @@ class HexitecPileUp():
             frame_peaks["voltage"][w].values).to(self.incident_photons["energy"].unit)
         # Determine time unit of pandas timeseries and convert photon
         # times to Quantity.
-        measured_photon_times = Quantity(frame_peaks.index[w].values,
-                                unit=self._sample_unit).to(self.incident_photons["time"].unit)
+        frame_duration_secs = self.frame_duration.to('s').value
+        rounded_photon_times = np.round(
+            frame_peaks.index[w].total_seconds()/frame_duration_secs)*frame_duration_secs
+        measured_photon_times = Quantity(rounded_photon_times, unit='s'
+                                         ).to(self.incident_photons["time"].unit)
         # Combine photon times and energies into measured photon list.
         return measured_photon_times, measured_photon_energies
 
@@ -360,109 +363,3 @@ class HexitecPileUp():
             [self.incident_spectrum["lower_bin_edges"],
              self.incident_spectrum["upper_bin_edges"], measured_counts],
             names=("lower_bin_edges", "upper_bin_edges", "counts"))
-
-
-def test_generate_random_photons_from_spectrum():
-    """Tests generate_random_counts_from_spectrum()."""
-    # Define bins for spectrum.
-    n_bins = 1000
-    lower_end = 1.
-    upper_end = 100.
-    bin_width = (upper_end-lower_end)/n_bins
-    lower_bin_edges = Quantity(np.linspace(lower_end, upper_end-bin_width, n_bins), unit=u.keV)
-    upper_bin_edges = Quantity(np.linspace(lower_end+bin_width, upper_end, n_bins), unit=u.keV)
-    # Use thermal thin target bremsstrahlung model to create spectrum
-    kB = Quantity(8.6173324e-8, unit=u.keV/u.K)  # Boltzmann constant
-    T = Quantity(1.e7, unit=u.K) # Temperature
-    EM = Quantity(1.e49, unit=u.cm**-3) # Emission measure
-    a = Quantity(8.1e-39, unit=u.cm/u.s*u.K**0.5) # proportionality constant at 1AU
-    expected_counts = a*EM*T**(-0.5)*np.exp(-upper_bin_edges/(kB*T))
-    expected_spectrum = Table([lower_bin_edges, upper_bin_edges, expected_counts],
-                              names=("lower_bin_edges", "upper_bin_edges", "counts"))
-    # Use generate_random_counts_from_spectrum() to sample count list
-    n_counts = 1000000
-    #test_photons = generate_random_photons_from_spectrum(lower_bin_edges, upper_bin_edges,
-    #                                                     expected_counts.value, n_counts)
-    #test_photons = generate_random_photons_from_spectrum(expected_spectrum, n_counts)
-    hpu = HexitecPileUp()
-    hpu.incident_spectrum = expected_spectrum
-    hpu.generate_random_photons_from_spectrum(n_counts)
-    # Turn list of counts into a spectrum.
-    bins = list(lower_bin_edges.value)
-    bins.append(upper_bin_edges.value[-1])
-    test_counts = np.histogram(hpu.incident_photons, bins=bins)    
-    # Assert where test_spectrum has significant number of counts, that
-    # they are approximately equal to true_spectrums when scaled to n_counts.
-    w = np.where(test_counts > 10.)[0]
-    np.testing.assert_allclose(expected_counts[w]/(expected_counts[0]/test_counts[0]),
-                               test_counts[w], rtol=0.01)
-
-def test_simulate_masking_photon_list_1pixel():
-    """Test simulate_masking_photon_list_1pixel()."""
-    # Define a HexitecPileUp object.
-    hpu = HexitecPileUp()
-    # Define input photon list and waiting times.
-    incident_photons = Quantity([1, 1, 2, 3, 5, 4, 6], unit=u.keV)
-    first_photon_offset = Quantity([0.], unit=u.s)
-    photon_waiting_times = first_photon_offset + Quantity(
-        np.array([0., 0.5, 0.5, 0.5, 0.5, 0.5, 2.5])*hpu.frame_duration, unit=u.s)
-    # Define expected output photon list.
-    expected_photons = np.ma.masked_array(incident_photons, mask=[0,1,1,0,0,1,0])
-    # Calculate test measured photon list by calling
-    # simulate_masking_photon_list_1pixel().
-    hpu.first_photon_offset = first_photon_offset
-    hpu.incident_photons = incident_photons
-    hpu.photon_waiting_times = photon_waiting_times
-    hpu.simulate_masking_on_photon_list_1pixel()
-    # Assert test photon list is the same as expected photon list.
-    np.testing.assert_array_equal(expected_photons.data, hpu.measured_photons.data)
-    np.testing.assert_array_equal(expected_photons.mask, hpu.measured_photons.mask)
-    assert expected_photons.data.unit == hpu.measured_photons.data.unit
-
-
-def test_simulate_hexitec_on_photon_list_1pixel():
-    """Test simulate_masking_photon_list_1pixel()."""
-    # Define a HexitecPileUp object.
-    hpu = HexitecPileUp()
-    # Define input photon list and waiting times.
-    photon_energies = Quantity([1, 1, 2, 3, 5, 4, 6, 7, 8, 9, 10], unit=u.keV)
-    photon_times = Quantity(np.array(
-        [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 4.5, 6., 7.5, 7.5, 10000.5])*hpu.frame_duration,
-        unit=u.s)
-    incident_photons = Table([photon_times, photon_energies], names=("time", "energy"))
-    # Define expected output photon list.
-    f = hpu._voltage_pulse_shape[
-        np.where(hpu._voltage_pulse_shape == max(hpu._voltage_pulse_shape))[0][0]-1]
-    expected_energies = Quantity([1, 3, 5, 6, 7*f, 7, 17, 10], unit=u.keV)
-    expected_times = Quantity(np.array([0., 1., 2., 4., 5., 6., 7., 10000])*hpu.frame_duration, unit=u.s)
-    expected_photons = Table([expected_times, expected_energies], names=("time", "energy"))
-    # Calculate test measured photon list by calling
-    # simulate_hexitec_photon_list_1pixel().
-    hpu.simulate_hexitec_on_photon_list_1pixel(incident_photons)
-    # Assert test photon list is the same as expected photon list.
-    #assert all(hpu.measured_photons["time"] == expected_photons["time"])
-    #assert all(hpu.measured_photons["energy"] == expected_photons["energy"])
-    return hpu
-
-
-def test_simulate_masking_photon_list_1pixel():
-    """Test simulate_masking_photon_list_1pixel()."""
-    # Define a HexitecPileUp object.
-    hpu = HexitecPileUp()
-    # Define input photon list and waiting times.
-    incident_photons = Quantity([1, 1, 2, 3, 5, 4, 6], unit=u.keV)
-    first_photon_offset = Quantity([0.], unit=u.s)
-    photon_waiting_times = first_photon_offset + Quantity(
-        np.array([0., 0.5, 0.5, 0.5, 0.5, 0.5, 2.5])*hpu.frame_duration, unit=u.s)
-    # Define expected output photon list.
-    expected_photons = np.ma.masked_array(incident_photons, mask=[0,1,1,0,0,1,0])
-    # Calculate test measured photon list by calling
-    # simulate_masking_photon_list_1pixel().
-    hpu.first_photon_offset = first_photon_offset
-    hpu.incident_photons = incident_photons
-    hpu.photon_waiting_times = photon_waiting_times
-    hpu.simulate_masking_on_photon_list_1pixel()
-    # Assert test photon list is the same as expected photon list.
-    np.testing.assert_array_equal(expected_photons.data, hpu.measured_photons.data)
-    np.testing.assert_array_equal(expected_photons.mask, hpu.measured_photons.mask)
-    assert expected_photons.data.unit == hpu.measured_photons.data.unit
