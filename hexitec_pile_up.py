@@ -24,11 +24,15 @@ class HexitecPileUp():
         # Define some magic numbers. N.B. _sample_unit must be in string
         # format so it can be used for Quantities and numpy datetime64.
         self._sample_unit = 'ns'
-        self._sample_step = Quantity(100., unit='ns')
-        self.voltage_peaking_time = Quantity(2., unit='us').to(self._sample_unit)
-        self.voltage_decay_time = Quantity(8., unit='us').to(self._sample_unit)
-        self.frame_duration = 1./frame_rate
+        self._sample_step = Quantity(100., unit=self._sample_unit)
+        self._voltage_peaking_time = Quantity(2., unit='us').to(self._sample_unit)
+        self._voltage_decay_time = Quantity(8., unit='us').to(self._sample_unit)
         self._voltage_pulse_shape = self._define_voltage_pulse_shape()
+        # Set frame duration from inverse of input frame_rate and round
+        # to nearest multiple of self._sample_step.
+        self.frame_duration = Quantity(
+            round((1./frame_rate).to(self._sample_unit).value/self._sample_step.value
+                  )*self._sample_step).to(1/frame_rate.unit)
 
 
     def simulate_hexitec_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
@@ -187,9 +191,9 @@ class HexitecPileUp():
         timeseries_n_frames = subseries_n_frames+2
         subseries_max_duration = Quantity(subseries_n_frames*frame_duration)
         # Determine time edges of each sub time series.
-        subseries_edges = Quantity(
-            range(int(self.incident_photons["time"][-1]/subseries_max_duration.value+1)+1),
-            unit=self.incident_photons["time"].unit)
+        subseries_edges = \
+          (range(int(self.incident_photons["time"][-1]/subseries_max_duration.value+1)+1) \
+           *subseries_max_duration).to(self.incident_photons["time"].unit)
         # Define arrays to hold measured photons
         measured_photon_times = np.array([], dtype=float)
         measured_photon_energies = np.array([], dtype=float)
@@ -209,20 +213,23 @@ class HexitecPileUp():
             timeseries_incident_photons = self.incident_photons[
                 np.logical_and(self.incident_photons["time"] >= timeseries_start,
                                self.incident_photons["time"] < timeseries_end)]
-            # Generate sub time series of voltage pulses due to photons.
-            timeseries = self._convert_photons_to_voltage_timeseries(
-                timeseries_incident_photons, timeseries_start, timeseries_n_frames)
-            subseries_measured_photon_times, subseries_measured_photon_energies = \
-              self._convert_voltage_timeseries_to_measured_photons(timeseries)
-            # Add subseries measured photon times and energies to all
-            # photon times and energies Quantities excluding any
-            # photons from first or last frame.
-            w = np.logical_and(subseries_measured_photon_times >= subseries_edges[i],
-                               subseries_measured_photon_times < subseries_edges[i+1])
-            measured_photon_times = np.append(
-                measured_photon_times, subseries_measured_photon_times.value[w])
-            measured_photon_energies = np.append(
-                measured_photon_energies, subseries_measured_photon_energies.value[w])
+            # If there are photons in this subseries, continue.
+            # Else move to next frame.
+            if len(timeseries_incident_photons) > 0:
+                # Generate sub time series of voltage pulses due to photons.
+                timeseries = self._convert_photons_to_voltage_timeseries(
+                    timeseries_incident_photons, timeseries_start, timeseries_n_frames)
+                subseries_measured_photon_times, subseries_measured_photon_energies = \
+                  self._convert_voltage_timeseries_to_measured_photons(timeseries)
+                # Add subseries measured photon times and energies to all
+                # photon times and energies Quantities excluding any
+                # photons from first or last frame.
+                w = np.logical_and(subseries_measured_photon_times >= subseries_edges[i],
+                                   subseries_measured_photon_times < subseries_edges[i+1])
+                measured_photon_times = np.append(
+                    measured_photon_times, subseries_measured_photon_times.value[w])
+                measured_photon_energies = np.append(
+                    measured_photon_energies, subseries_measured_photon_energies.value[w])
             time2 = timeit.default_timer()
             print "Finished {0}th subseries in {1} s".format(i+1, time2-time1)
             print " "
@@ -236,9 +243,10 @@ class HexitecPileUp():
     def _convert_voltage_timeseries_to_measured_photons(self, timeseries):
         """Converts a time series of HEXITEC voltage to measured photons."""
         # Convert timeseries into measured photon list by resampling
-        # at frame rate and taking max.
-        # In resample command, '100U' signifies 100 microsecs.
-        frame_peaks = timeseries.resample("100U", how=min)
+        # at frame rate and taking min.
+        # In resample command, 'xN' signifies x nanoseconds.
+        frame_peaks = timeseries.resample(
+            "{0}N".format(int(self.frame_duration.to(u.ns).value)), how=min)
         # Convert voltages back to photon energies
         threshold = 0.
         w = np.where(frame_peaks["voltage"] < threshold)[0]
@@ -306,8 +314,8 @@ class HexitecPileUp():
         voltage = np.convolve(voltage_delta_timeseries, self._voltage_pulse_shape)
         # Trim edges of convolved time series so that peaks of voltage
         # pulses align with photon times.
-        start_index = int(np.rint(self.voltage_peaking_time/self._sample_step))
-        end_index = int(np.rint(self.voltage_decay_time/self._sample_step))*(-1)+1
+        start_index = int(np.rint(self._voltage_peaking_time/self._sample_step))
+        end_index = int(np.rint(self._voltage_decay_time/self._sample_step))*(-1)+1
         voltage = voltage[start_index:end_index]
         # Define timestamps for timeseries.
         timestamps = np.arange(0, n_samples*sample_step.value, sample_step.value) + \
@@ -322,8 +330,8 @@ class HexitecPileUp():
         """Defines the normalised shape of voltage pulse with given discrete sampling frequency."""
         sample_step = self._sample_step.to(self._sample_unit).value
         # Convert input peaking and decay times to a standard unit.
-        voltage_peaking_time = self.voltage_peaking_time.to(self._sample_unit).value
-        voltage_decay_time = self.voltage_decay_time.to(self._sample_unit).value
+        voltage_peaking_time = self._voltage_peaking_time.to(self._sample_unit).value
+        voltage_decay_time = self._voltage_decay_time.to(self._sample_unit).value
         # Define other Gaussian parameters.
         mu = voltage_peaking_time
         zero_equivalent = 1e-3
