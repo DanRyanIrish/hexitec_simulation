@@ -82,12 +82,29 @@ class HexitecPileUp():
         # Mark photons which were recorded and unrecorded using a
         # masked array.  Result recorded in self.measured_photons.
         self.simulate_hexitec_on_photon_list_1pixel(incident_photons)
-        # Convert measured photon list into counts in same bins as the
-        # incident spectrum.
-        bin_edges = list(self.incident_spectrum["lower_bin_edges"])
-        bin_edges.append(self.incident_spectrum["upper_bin_edges"][-1])
+        # Convert measured photon list into counts into bins with same
+        # bins as the incident spectrum.  N.B. Measured photons can
+        # have energies outside incident spectrum energy range.  For
+        # these bins, use mean bin width of incident spectrum.
+        # N.B. The exact values of incident spectrum bins must be used
+        # as rounding errors/approximations can cause erroneous
+        # behaviour when binning counts.
+        bin_width = np.mean(
+            incident_spectrum["upper_bin_edges"]-incident_spectrum["lower_bin_edges"])
+        lower_bins = np.arange(incident_spectrum["lower_bin_edges"][0],
+                               measured_photons["energy"].min()-bin_width,
+                               -bin_width).sort()
+        upper_bins = np.arange(incident_spectrum["upper_bin_edges"][-1]+bin_width,
+                               measured_photons["energy"].max()+bin_width, bin_width)
+        bin_edges = np.concatenate(
+            (lower_bins[:-1], hpu.incident_spectrum["lower_bin_edges"],
+             np.array([hpu.incident_spectrum["upper_bin_edges"][-1]]), upper_bins))
         # Return an astropy table of the measured spectrum.
-        self._convert_photon_list_to_spectrum(bin_edges)
+        measured_counts = np.histogram(self.measured_photons["energy"], bins=bin_edges)[0]
+        self.measured_spectrum = Table(
+            [self.incident_spectrum["lower_bin_edges"],
+             self.incident_spectrum["upper_bin_edges"], measured_counts],
+            names=("lower_bin_edges", "upper_bin_edges", "counts"))
 
 
     def generate_random_photons_from_spectrum(self, incident_spectrum, photon_rate, n_photons):
@@ -356,18 +373,3 @@ class HexitecPileUp():
     def _convert_voltages_to_photon_energy(self, voltages):
         """Determines photon energy from HEXITEC peak voltage."""
         return -voltages*u.keV
-
-    def _convert_photon_list_to_spectrum(self, bin_edges):
-        """Creates a histogram of a photon list and attaches it to the object.
-
-        Parameters
-        ----------
-        bin_edges : sequences of scalars
-          Defines bin edges.  Note therefore that length of bin_edges on number
-          of bins + 1.
-        """
-        measured_counts = np.histogram(self.measured_photons["energy"], bins=bin_edges)[0]
-        self.measured_spectrum = Table(
-            [self.incident_spectrum["lower_bin_edges"],
-             self.incident_spectrum["upper_bin_edges"], measured_counts],
-            names=("lower_bin_edges", "upper_bin_edges", "counts"))
