@@ -418,9 +418,9 @@ class HexitecPileUp():
           Same as input incident_photons.
 
         """
-        self.incident_photons = incident_photons
-        sample_step = self._sample_step.to(self.incident_photons["time"].unit)
-        frame_duration = self.frame_duration.to(self.incident_photons["time"].unit)
+        #self.incident_photons = incident_photons
+        sample_step = self._sample_step.to(incident_photons["time"].unit)
+        frame_duration = self.frame_duration.to(incident_photons["time"].unit)
         # Break incident photons into sub time series manageable for a
         # pandas time series.
         # Convert max points into max duration such that duration
@@ -430,8 +430,8 @@ class HexitecPileUp():
         subseries_max_duration = Quantity(subseries_n_frames*frame_duration)
         # Determine time edges of each sub time series.
         subseries_edges = \
-          (range(int(self.incident_photons["time"][-1]/subseries_max_duration.value+1)+1) \
-           *subseries_max_duration).to(self.incident_photons["time"].unit)
+          (range(int(incident_photons["time"][-1]/subseries_max_duration.value+1)+1) \
+           *subseries_max_duration).to(incident_photons["time"].unit)
         # Define arrays to hold measured photons
         measured_photon_times = np.array([], dtype=float)
         measured_photon_energies = np.array([], dtype=float)
@@ -448,17 +448,23 @@ class HexitecPileUp():
             # frames should be removed later.
             timeseries_start = subseries_edges[i]-frame_duration
             timeseries_end = subseries_edges[i+1]+frame_duration
-            timeseries_incident_photons = self.incident_photons[
-                np.logical_and(self.incident_photons["time"] >= timeseries_start,
-                               self.incident_photons["time"] < timeseries_end)]
+            timeseries_incident_photons = incident_photons[
+                np.logical_and(incident_photons["time"] >= timeseries_start,
+                               incident_photons["time"] < timeseries_end)]
             # If there are photons in this subseries, continue.
             # Else move to next frame.
             if len(timeseries_incident_photons) > 0:
                 # Generate sub time series of voltage pulses due to photons.
-                timeseries = self._convert_photons_to_voltage_timeseries(
-                    timeseries_incident_photons, timeseries_start, timeseries_n_frames)
+                timeseries, timseries_voltage_unit = \
+                  self._convert_photons_to_voltage_timeseries(
+                      timeseries_incident_photons, timeseries_start, timeseries_n_frames)
                 subseries_measured_photon_times, subseries_measured_photon_energies = \
-                  self._convert_voltage_timeseries_to_measured_photons(timeseries)
+                  self._convert_voltage_timeseries_to_measured_photons(
+                      timeseries, voltage_unit=timseries_voltage_unit)
+                subseries_measured_photon_times = subseries_measured_photon_times.to(
+                    incident_photons["time"].unit)
+                subseries_measured_photon_energies = subseries_measured_photon_energies.to(
+                    incident_photons["energy"].unit)
                 # Add subseries measured photon times and energies to all
                 # photon times and energies Quantities excluding any
                 # photons from first or last frame.
@@ -473,12 +479,12 @@ class HexitecPileUp():
             print " "
         # Convert results into table and attach to object.
         self.measured_photons = Table(
-            [Quantity(measured_photon_times, unit=self.incident_photons["time"].unit),
-             Quantity(measured_photon_energies, unit=self.incident_photons["energy"].unit)],
+            [Quantity(measured_photon_times, unit=incident_photons["time"].unit),
+             Quantity(measured_photon_energies, unit=incident_photons["energy"].unit)],
             names=("time", "energy"))
 
 
-    def _convert_voltage_timeseries_to_measured_photons(self, timeseries):
+    def _convert_voltage_timeseries_to_measured_photons(self, timeseries, voltage_unit):
         """Converts a time series of HEXITEC voltage to measured photons."""
         # Convert timeseries into measured photon list by resampling
         # at frame rate and taking min.
@@ -489,14 +495,13 @@ class HexitecPileUp():
         threshold = 0.
         w = np.where(frame_peaks["voltage"] < threshold)[0]
         measured_photon_energies = self._convert_voltages_to_photon_energy(
-            frame_peaks["voltage"][w].values).to(self.incident_photons["energy"].unit)
+            frame_peaks["voltage"][w].values, voltage_unit)
         # Determine time unit of pandas timeseries and convert photon
         # times to Quantity.
-        frame_duration_secs = self.frame_duration.to('s').value
+        frame_duration_secs = self.frame_duration.to("s").value
         rounded_photon_times = np.round(
             frame_peaks.index[w].total_seconds()/frame_duration_secs)*frame_duration_secs
-        measured_photon_times = Quantity(rounded_photon_times, unit='s'
-                                         ).to(self.incident_photons["time"].unit)
+        measured_photon_times = Quantity(rounded_photon_times, unit="s")
         # Combine photon times and energies into measured photon list.
         return measured_photon_times, measured_photon_energies
 
@@ -517,7 +522,7 @@ class HexitecPileUp():
           Time series of voltage vs. time inside HEXITEC ASIC due to photon hits.
         
         """
-        # Ensure certains variables are in correct unit.
+        # Ensure certain variables are in correct unit.
         sample_step = self._sample_step.to(self._sample_unit)
         frame_duration = self.frame_duration.to(self._sample_unit)
         # If there are simulataneous photon hits (i.e. photons assigned
@@ -561,7 +566,8 @@ class HexitecPileUp():
         # Generate time series from voltage and timestamps.
         timeseries = pandas.DataFrame(
             voltage, index=pandas.to_timedelta(timestamps, self._sample_unit), columns=["voltage"])
-        return timeseries
+        timeseries_voltage_unit = voltage_deltas.unit
+        return timeseries, timeseries_voltage_unit
 
 
     def _define_voltage_pulse_shape(self):
@@ -588,9 +594,9 @@ class HexitecPileUp():
 
     def _convert_photon_energy_to_voltage(self, photon_energy):
         """Determines HEXITEC peak voltage due photon of given energy."""
-        return -photon_energy.data*u.V
+        return -photon_energy.to(u.keV).value*u.V
 
 
-    def _convert_voltages_to_photon_energy(self, voltages):
+    def _convert_voltages_to_photon_energy(self, voltages, voltage_unit):
         """Determines photon energy from HEXITEC peak voltage."""
-        return -voltages*u.keV
+        return -(voltages*voltage_unit).to(u.V).value*u.keV
