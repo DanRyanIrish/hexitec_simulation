@@ -203,10 +203,18 @@ class HexitecPileUp():
                                   [], []], names=("time", "energy", "x", "y"))
         for j in range(n_pixels[1]):
             for i in range(n_pixels[0]):
-                pixel_measured_photons = self.simulate_hexitec_on_photon_list_1pixel(
-                    pixelated_photons[np.logical_and(pixelated_photons["x_pixel"] == i,
-                                                     pixelated_photons["y_pixel"] == j)])
-                measured_photons = vstack(measured_photons, pixel_measured_photons)
+                print "Processing photons hitting pixel ({0}, {1}) of {2} at {3}".format(
+                    i, j, n_pixels, datetime.now())
+                time1 = timeit.default_timer()
+                w = np.logical_and(pixelated_photons["x_pixel"] == i,
+                                   pixelated_photons["y_pixel"] == j)
+                if w.any():
+                    pixel_measured_photons = \
+                      self.simulate_hexitec_on_photon_list_1pixel(pixelated_photons[w])
+                    measured_photons = vstack(measured_photons, pixel_measured_photons)
+                time2 = timeit.default_timer()
+                print "Finished processing pixel ({0}, {1}) of {2} in {3} s.".format(
+                    i, j, n_pixels, time2-time1)
         # Sort photons by time and return to object.
         self.measured_photons = measured_photons.sort("time")
 
@@ -326,7 +334,9 @@ class HexitecPileUp():
             np.logical_and(y_pixels >= self.ypixel_range[0], y_pixels < self.ypixel_range[1]),
             energy > 0.)
         # Combine shared photons into new table.
-        pixelated_photons = Table([times[w], energy[w], x_pixels[w], y_pixels[w]],
+        pixelated_photons = Table([Quantity(times[w], incident_photons["time"].unit),
+                                   Quantity(energy[w], incident_photons["energy"].unit),
+                                   x_pixels[w], y_pixels[w]],
                                   names=("time", "energy", "x_pixel", "y_pixel"))
         return pixelated_photons
 
