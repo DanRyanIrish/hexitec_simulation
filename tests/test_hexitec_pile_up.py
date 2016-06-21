@@ -68,3 +68,59 @@ def test_simulate_hexitec_on_photon_list_1pixel():
     np.testing.assert_allclose(hpu.measured_photons["time"], expected_photons["time"],
                                atol=hpu.frame_duration.to(hpu.measured_photons["time"].unit).value)
     assert all(hpu.measured_photons["energy"] == expected_photons["energy"])
+
+def test_account_for_charge_sharing_in_photon_list():
+    """Test account_for_charge_sharing_in_photon_list()."""
+    # Create object
+    hpu = hexitec_pile_up.HexitecPileUp()
+    # Define test incident photon list.
+    times = Quantity([1, 2, 2, 3, 4, 4], unit=u.s)
+    pixel_coords = np.array([0, 3, 12, 3, 3, 4])
+    incident_photons = Table([times, [1]*len(times), pixel_coords+0.5, pixel_coords+0.5],
+                             names=("time", "energy", "x", "y"))
+    # Define expected photon list.
+    n_neighbours = 9
+    expected_times = np.array([1]*4+[2]*n_neighbours+[2]*n_neighbours+[3]* \
+                              n_neighbours+[4]*n_neighbours+[4]*n_neighbours, dtype=float)
+    central_distribution = list(hpu._divide_charge_among_pixels(
+        1.5, 1.5, hpu._charge_cloud_x_sigma, hpu._charge_cloud_y_sigma, hpu._n_1d_neighbours)[2])
+    expected_energies = np.array(central_distribution[4:6] + central_distribution[7:9] + \
+                                 central_distribution*5)
+    expected_x = [0, 1, 0, 1] + [coord for sublist in [
+        [pixel_coord-1, pixel_coord, pixel_coord+1]*3 for pixel_coord in pixel_coords[1:]]
+        for coord in sublist]
+    expected_y = [0, 0, 1, 1] + [coord for sublist in [
+        [pixel_coord-1]*3 + [pixel_coord]*3 + [pixel_coord+1]*3
+        for pixel_coord in pixel_coords[1:]] for coord in sublist]
+    expected_photons = Table([expected_times, expected_energies, expected_x, expected_y],
+                             names=("time", "energy", "x_pixel", "y_pixel"))
+    # Run account_for_charge_sharing_in_photon_list().
+    test_photons = hpu.account_for_charge_sharing_in_photon_list(
+        incident_photons, hpu._charge_cloud_x_sigma, hpu._charge_cloud_y_sigma,
+        hpu._n_1d_neighbours)
+    # Assert expected photons equal test photons.
+    assert expected_photons.colnames == test_photons.colnames
+    assert all(expected_photons["time"] == test_photons["time"])
+    assert all(expected_photons["energy"] == test_photons["energy"])
+    assert all(expected_photons["x_pixel"] == test_photons["x_pixel"])
+    assert all(expected_photons["y_pixel"] == test_photons["y_pixel"])
+
+def test_divide_charge_among_pixels():
+    """Test _divide_charge_among_pixels()."""
+    x = y = 1.5
+    x_sigma = y_sigma = 0.5
+    n_1d_neighbours = 3
+    hpu = hexitec_pile_up.HexitecPileUp()
+    # Define expected fractional energy.
+    expected_x_pixels = array([0, 1, 2, 0, 1, 2, 0, 1, 2])
+    expected_y_pixels = array([0, 0, 0, 1, 1, 1, 2, 2, 2])
+    expected_fractional_energy = array([ 0.02474497, 0.10739071, 0.02474497,
+                                         0.10739071, 0.46606494, 0.10739071,
+                                         0.02474497, 0.10739071, 0.02474497])
+    # Run divide_charge_among_pixels().
+    test_x_pixels, test_y_pixels, test_fractional_energy = \
+      hpu._divide_charge_among_pixels(x, y, x_sigma, y_sigma, n_1d_neighbours)
+    # Assert the expected value equal returned values.
+    assert all(expected_x_pixels == test_x_pixels)
+    assert all(expected_y_pixels == test_y_pixels)
+    assert all(expected_x_fractional_energy == test_fractional_energy)

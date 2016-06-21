@@ -9,9 +9,11 @@ from datetime import datetime
 import numpy as np
 from numpy import ma
 import astropy.units as u
-from astropy.table import Table
+from astropy.table import Table, vstack
 from astropy.units.quantity import Quantity
+from astropy import constants
 import pandas
+from scipy.special import erf
 
 # Defining max number of data points in a pandas dataframe.
 DATAFRAME_MAX_POINTS = 1e7
@@ -19,7 +21,8 @@ DATAFRAME_MAX_POINTS = 1e7
 class HexitecPileUp():
     """Simulates how HEXITEC records incident photons."""
 
-    def __init__(self, frame_rate=Quantity(3900., unit=1/u.s)):
+    def __init__(self, frame_rate=Quantity(3900., unit=1/u.s),
+                 xpixel_range=(0,80), ypixel_range=(0,80)):
         """Instantiates a HexitecPileUp object."""
         # Define some magic numbers. N.B. _sample_unit must be in string
         # format so it can be used for Quantities and numpy datetime64.
@@ -33,6 +36,12 @@ class HexitecPileUp():
         self.frame_duration = Quantity(
             round((1./frame_rate).to(self._sample_unit).value/self._sample_step.value
                   )*self._sample_step).to(1/frame_rate.unit)
+        self.xpixel_range = xpixel_range
+        self.ypixel_range = ypixel_range
+        self._n_1d_neighbours = 3
+        charge_cloud_3sigma = 86.875/250.  # charge cloud diameter/pixel length
+        self._charge_cloud_x_sigma = charge_cloud_3sigma/3.
+        self._charge_cloud_y_sigma = charge_cloud_3sigma/3.
 
 
     def simulate_hexitec_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
@@ -169,6 +178,218 @@ class HexitecPileUp():
         time2 = timeit.default_timer()
         print "Finished in {0} s.".format(time2-time1)
         return photons
+
+
+    def simulate_hexitec_on_spectrum(self, incident_spectrum, photon_rate, n_photons,
+                                     n_pixels=(80,80)):
+        """Simulates how a grid of HEXITEC pixels records photons from a given spectrum."""
+        # Generate random photons incident on detector.
+        self.incident_photons = self.generate_random_photons(incident_spectrum,
+                                                             photon_rate, n_photons)
+        # Simulate how HEXITEC records incident photons.
+        self.simulate_hexitec_on_photon_list(self.incident_photons, n_pixels=n_pixels)
+
+
+    def simulate_hexitec_on_photon_list(self, incident_photons, n_pixels=(80,80)):
+        """Simulates how HEXITEC pixels record photons from a given photon list."""
+        # Produce photon list accounting for charge sharing.
+        pixelated_photons = self.account_for_charge_sharing_in_photon_list(
+            incident_photons, self._charge_cloud_x_sigma,
+            self._charge_cloud_y_sigma, self._n_1d_neighbours)
+        # Separate photons by pixel and simulate each pixel's
+        # measurements.
+        measured_photons = Table([Quantity([], unit=self.incident_photons["time"].unit),
+                                  Quantity([], unit=self.incident_photons["energy"].unit),
+                                  [], []], names=("time", "energy", "x", "y"))
+        for j in range(n_pixels[1]):
+            for i in range(n_pixels[0]):
+                pixel_measured_photons = self.simulate_hexitec_on_photon_list_1pixel(
+                    pixelated_photons[np.logical_and(pixelated_photons["x_pixel"] == i,
+                                                     pixelated_photons["y_pixel"] == j)])
+                measured_photons = vstack(measured_photons, pixel_measured_photons)
+        # Sort photons by time and return to object.
+        self.measured_photons = measured_photons.sort("time")
+
+
+    def generate_random_photons(self, incident_spectrum, photon_rate, n_photons):
+        """Generates random photon times, energies and detector hit locations."""
+        self.photon_rate = photon_rate
+        # Generate photon times since start of observations (t=0).
+        photon_times = self._generate_random_photon_times(n_photons)
+        # Generate photon energies.
+        photon_energies = self._generate_random_photon_energies_from_spectrum(
+            incident_spectrum, photon_rate, n_photons)
+        # Generate photon hit locations.
+        x_locations, y_locations = self._generate_random_photon_locations(n_photons)
+        # Associate photon times, energies and locations.
+        return Table([photon_times, photon_energies, x_locations, y_locations],
+                     names=("time", "energy", "x", "y"))
+
+
+    def _generate_random_photon_energies_from_spectrum(self, incident_spectrum,
+                                                       photon_rate, n_photons):
+        """Converts an input photon spectrum to a probability distribution.
+
+        Parameters
+        ----------
+        incident_spectrum : `astropy.table.Table`
+          Incident photon spectrum.  Table has following columns:
+            lower_bin_edges : `astropy.units.quantity.Quantity`
+            upper_bin_edges : `astropy.units.quantity.Quantity`
+            counts : array-like
+        photon_rate : `astropy.units.quantity.Quantity`
+          Average rate at which photons hit the pixel.
+        n_photons : `int`
+          Total number of random counts to be generated.
+
+        Returns
+        -------
+        photon_energies : `astropy.units.quantity.Quantity`
+            Photon energies
+
+        """
+        self.incident_spectrum = incident_spectrum
+        if type(photon_rate) is not Quantity:
+            raise TypeError("photon_rate must be an astropy.units.quantity.Quantity")
+        self.photon_rate = photon_rate
+        n_counts = int(n_photons)
+        # Calculate cumulative density function of spectrum for lower and
+        # upper edges of spectral bins.
+        cdf_upper = np.cumsum(self.incident_spectrum["counts"])
+        cdf_lower = np.insert(cdf_upper, 0, 0.)
+        cdf_lower = np.delete(cdf_lower, -1)
+        # Generate random numbers representing CDF values.
+        print "Generating random numbers for photon energy transformation."
+        time1 = timeit.default_timer()
+        randoms = np.asarray([random.random() for i in range(n_counts)])*cdf_upper[-1]
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
+        # Generate array of spectrum bin indices.
+        print "Transforming random numbers into photon energies."
+        time1 = timeit.default_timer()
+        bin_indices = np.arange(len(self.incident_spectrum["lower_bin_edges"]))
+        # Generate random energies from randomly generated CDF values.
+        photon_energies = Quantity([self.incident_spectrum["lower_bin_edges"].data[
+            bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
+            for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
+        time2 = timeit.default_timer()
+        print "Finished in {0} s.".format(time2-time1)
+        return photon_energies
+
+
+    def _generate_random_photon_times(self, n_photons):
+        """Generates random photon times."""
+        # Generate random waiting times before each photon.
+        photon_waiting_times = Quantity(
+            np.random.exponential(1./self.photon_rate, n_photons), unit='s')
+        return photon_waiting_times.cumsum()
+
+
+    def _generate_random_photon_locations(self, n_photons):
+        """Generates random photon hit locations."""
+        # Generate random x locations for each photon.
+        x = np.random.uniform(self.xpixel_range[0], self.xpixel_range[1], n_photons)
+        y = np.random.uniform(self.ypixel_range[0], self.ypixel_range[1], n_photons)
+        return x, y
+
+
+    def account_for_charge_sharing_in_photon_list(self, incident_photons, charge_cloud_x_sigma,
+                                                  charge_cloud_y_sigma, n_1d_neighbours):
+        """
+        Divides photon hits among neighbouring pixels by the charge sharing process.
+
+        """
+        # For each photon create extra pseudo-photons in nearest
+        # neighbours due to charge sharing.
+        n_neighbours = n_1d_neighbours**2
+        n_photons_shared = len(incident_photons)*n_neighbours
+        times = np.full(n_photons_shared, np.nan)
+        x_pixels = np.full(n_photons_shared, np.nan)
+        y_pixels = np.full(n_photons_shared, np.nan)
+        energy = np.full(n_photons_shared, np.nan)
+        for i, photon in enumerate(incident_photons):
+            # Find fraction of energy in central & neighbouring pixels.
+            x_shared_pixels, y_shared_pixels, fractional_energy_in_pixels = \
+              self._divide_charge_among_pixels(
+                  photon["x"], photon["y"], charge_cloud_x_sigma,
+                  charge_cloud_y_sigma, n_1d_neighbours)
+            # Insert new shared photon parameters into relevant list.
+            times[i*n_neighbours:(i+1)*n_neighbours] = photon["time"]
+            x_pixels[i*n_neighbours:(i+1)*n_neighbours] = x_shared_pixels
+            y_pixels[i*n_neighbours:(i+1)*n_neighbours] = y_shared_pixels
+            energy[i*n_neighbours:(i+1)*n_neighbours] = \
+              photon["energy"]*fractional_energy_in_pixels
+        # Discard any charge lost at edges of detector and events with
+        # 0 energy.
+        w = np.logical_and(
+            np.logical_and(x_pixels >= self.xpixel_range[0], x_pixels < self.xpixel_range[1]),
+            np.logical_and(y_pixels >= self.ypixel_range[0], y_pixels < self.ypixel_range[1]),
+            energy > 0.)
+        # Combine shared photons into new table.
+        pixelated_photons = Table([times[w], energy[w], x_pixels[w], y_pixels[w]],
+                                  names=("time", "energy", "x_pixel", "y_pixel"))
+        return pixelated_photons
+
+
+    def _divide_charge_among_pixels(self, x, y, x_sigma, y_sigma, n_1d_neighbours):
+        """Divides charge-shared photon hits into separate photon hits."""
+        # Generate pixel numbers of central pixel & nearest neighbours.
+        x_hit_pixel = int(x)
+        y_hit_pixel = int(y)
+        half_nearest = (n_1d_neighbours-1)/2
+        neighbours_range = range(-half_nearest, half_nearest+1)
+        x_shared_pixels = np.array([x_hit_pixel+i for i in neighbours_range]*n_1d_neighbours)
+        y_shared_pixels = np.array(
+            [[y_hit_pixel+i]*n_1d_neighbours for i in neighbours_range]).flatten()
+        # Find fraction of charge in each pixel.
+        return x_shared_pixels, y_shared_pixels, self._integrate_gaussian2d(
+            (x_shared_pixels, x_shared_pixels+1), (y_shared_pixels, y_shared_pixels+1),
+            x, y, x_sigma, y_sigma)
+
+
+    def _charge_cloud_radius(d, T, V):
+        """
+        Returns the radius of the charge cloud when is reaches the anode.
+
+        Parameters
+        ----------
+        d : `astropy.units.quantity.Quantity`
+            Drift length of charge cloud from site of photon interactiont to anode.
+            Given by CdTe thickness - mean free path of photon in CdTe.
+        T : `astropy.units.quantity.Quantity`
+            Operating temperature of the detector.
+        V : `astropy.units.quantity.Quantity`
+            Operating bias voltage of detector.
+
+        Returns
+        -------
+        r : `astropy.units.quantity.Quantity`
+            Radius of charge cloud at anode.
+
+        References
+        ----------
+        [1] : Veale et al. (2014), Measurements of Charege Sharing in Small Pixelated Detectors
+        [2] : Iniewski et al. (2007)
+
+        """
+        # Determine initial radius of charge cloud, r0, from empirical
+        # relation derived by Veale et al. (2014).
+        r0 = Quantity(0.1477*T.to(u.Celsius).value+14.66, unit="um")
+        # Return Quantity of radius at anode.  Is the unit system correct?  I don't think so.  Check!
+        return r0 + Quantity(1.15*d.si.value* \
+                             (2*constants.k_B.si.value*T.to(u.Celsius).value/ \
+                              (constants.e.si.value*abs(V.to("V").value)))**0.5,
+                              unit="um")
+
+
+    def _integrate_gaussian(self, limits, mu, sigma):
+        return (1/(sigma*np.sqrt(2*np.pi))) * np.sqrt(np.pi/2)*sigma* \
+          (erf((limits[1]-mu)/(np.sqrt(2)*sigma))-erf((limits[0]-mu)/(np.sqrt(2)*sigma)))
+
+
+    def _integrate_gaussian2d(self, x_limits, y_limits, x_mu, y_mu, x_sigma, y_sigma):
+        return self._integrate_gaussian(x_limits, x_mu, x_sigma)* \
+          self._integrate_gaussian(y_limits, y_mu, y_sigma)
 
 
     def simulate_hexitec_on_photon_list_1pixel(self, incident_photons):
