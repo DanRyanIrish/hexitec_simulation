@@ -16,7 +16,7 @@ import pandas
 from scipy.special import erf
 
 # Defining max number of data points in a pandas dataframe.
-DATAFRAME_MAX_POINTS = 1e7
+DATAFRAME_MAX_POINTS = 1e8
 
 class HexitecPileUp():
     """Simulates how HEXITEC records incident photons."""
@@ -90,7 +90,7 @@ class HexitecPileUp():
             incident_spectrum, photon_rate, n_photons)
         # Mark photons which were recorded and unrecorded using a
         # masked array.  Result recorded in self.measured_photons.
-        self.simulate_hexitec_on_photon_list_1pixel(incident_photons)
+        self.measured_photons = self.simulate_hexitec_on_photon_list_1pixel(incident_photons)
         # Convert measured photon list into counts into bins with same
         # bins as the incident spectrum.  N.B. Measured photons can
         # have energies outside incident spectrum energy range.  For
@@ -443,10 +443,13 @@ class HexitecPileUp():
         subseries_n_frames = int(DATAFRAME_MAX_POINTS*sample_step.value/frame_duration.value)
         timeseries_n_frames = subseries_n_frames+2
         subseries_max_duration = Quantity(subseries_n_frames*frame_duration)
-        # Determine time edges of each sub time series.
-        subseries_edges = \
-          (range(int(incident_photons["time"][-1]/subseries_max_duration.value+1)+1) \
-           *subseries_max_duration).to(incident_photons["time"].unit)
+        # Determine lower time edges of each sub time series.
+        final_frame_upper_edge = int(
+                incident_photons["time"][-1]/frame_duration.value+1)*frame_duration.value
+        subseries_edges = np.arange(0, final_frame_upper_edge, subseries_max_duration.value)
+        if subseries_edges[-1] < final_frame_upper_edge:
+            subseries_edges = np.append(subseries_edges, final_frame_upper_edge)
+        subseries_edges = subseries_edges*incident_photons["time"].unit
         # Define arrays to hold measured photons
         measured_photon_times = np.array([], dtype=float)
         measured_photon_energies = np.array([], dtype=float)

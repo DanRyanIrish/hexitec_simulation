@@ -63,7 +63,7 @@ def test_simulate_hexitec_on_photon_list_1pixel():
     expected_photons = Table([expected_times, expected_energies], names=("time", "energy"))
     # Calculate test measured photon list by calling
     # simulate_hexitec_photon_list_1pixel().
-    hpu.simulate_hexitec_on_photon_list_1pixel(incident_photons)
+    hpu.measured_photons = hpu.simulate_hexitec_on_photon_list_1pixel(incident_photons)
     # Assert test photon list is the same as expected photon list.
     np.testing.assert_allclose(hpu.measured_photons["time"], expected_photons["time"],
                                atol=hpu.frame_duration.to(hpu.measured_photons["time"].unit).value)
