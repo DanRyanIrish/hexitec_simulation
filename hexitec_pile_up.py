@@ -211,12 +211,17 @@ class HexitecPileUp():
                 if w.any():
                     pixel_measured_photons = \
                       self.simulate_hexitec_on_photon_list_1pixel(pixelated_photons[w])
-                    measured_photons = vstack(measured_photons, pixel_measured_photons)
+                    # Add pixel info to pixel_measured_photons table.
+                    pixel_measured_photons["x"] = [i]*len(pixel_measured_photons)
+                    pixel_measured_photons["y"] = [j]*len(pixel_measured_photons)
+                    measured_photons = vstack((measured_photons, pixel_measured_photons))
                 time2 = timeit.default_timer()
                 print "Finished processing pixel ({0}, {1}) of {2} in {3} s.".format(
                     i, j, n_pixels, time2-time1)
+                print " "
         # Sort photons by time and return to object.
-        self.measured_photons = measured_photons.sort("time")
+        measured_photons.sort("time")
+        self.measured_photons = measured_photons
 
 
     def generate_random_photons(self, incident_spectrum, photon_rate, n_photons):
@@ -487,8 +492,8 @@ class HexitecPileUp():
             time2 = timeit.default_timer()
             print "Finished {0}th subseries in {1} s".format(i+1, time2-time1)
             print " "
-        # Convert results into table and attach to object.
-        self.measured_photons = Table(
+        # Convert results into table and return.
+        return Table(
             [Quantity(measured_photon_times, unit=incident_photons["time"].unit),
              Quantity(measured_photon_energies, unit=incident_photons["energy"].unit)],
             names=("time", "energy"))
