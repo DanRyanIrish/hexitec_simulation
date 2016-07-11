@@ -22,7 +22,8 @@ class HexitecPileUp():
     """Simulates how HEXITEC records incident photons."""
 
     def __init__(self, frame_rate=Quantity(3900., unit=1/u.s),
-                 xpixel_range=(0,80), ypixel_range=(0,80)):
+                 incident_xpixel_range=(0,80), incident_ypixel_range=(0,80),
+                 readout_xpixel_range=(0,80), readout_ypixel_range=(0,80)):
         """Instantiates a HexitecPileUp object."""
         # Define some magic numbers. N.B. _sample_unit must be in string
         # format so it can be used for Quantities and numpy datetime64.
@@ -36,10 +37,13 @@ class HexitecPileUp():
         self.frame_duration = Quantity(
             round((1./frame_rate).to(self._sample_unit).value/self._sample_step.value
                   )*self._sample_step).to(1/frame_rate.unit)
-        self.xpixel_range = xpixel_range
-        self.ypixel_range = ypixel_range
+        self.incident_xpixel_range = incident_xpixel_range
+        self.incident_ypixel_range = incident_ypixel_range
+        self.readout_xpixel_range = readout_xpixel_range
+        self.readout_ypixel_range = readout_ypixel_range
         self._n_1d_neighbours = 3
         charge_cloud_3sigma = 86.875/250.  # charge cloud diameter/pixel length
+        #charge_cloud_3sigma = 17.2/250.  # charge cloud diameter/pixel length
         self._charge_cloud_x_sigma = charge_cloud_3sigma/3.
         self._charge_cloud_y_sigma = charge_cloud_3sigma/3.
 
@@ -180,17 +184,16 @@ class HexitecPileUp():
         return photons
 
 
-    def simulate_hexitec_on_spectrum(self, incident_spectrum, photon_rate, n_photons,
-                                     n_pixels=(80,80)):
+    def simulate_hexitec_on_spectrum(self, incident_spectrum, photon_rate, n_photons):
         """Simulates how a grid of HEXITEC pixels records photons from a given spectrum."""
         # Generate random photons incident on detector.
         self.incident_photons = self.generate_random_photons(incident_spectrum,
                                                              photon_rate, n_photons)
         # Simulate how HEXITEC records incident photons.
-        self.simulate_hexitec_on_photon_list(self.incident_photons, n_pixels=n_pixels)
+        self.simulate_hexitec_on_photon_list(self.incident_photons)
 
 
-    def simulate_hexitec_on_photon_list(self, incident_photons, n_pixels=(80,80)):
+    def simulate_hexitec_on_photon_list(self, incident_photons):
         """Simulates how HEXITEC pixels record photons from a given photon list."""
         # Produce photon list accounting for charge sharing.
         pixelated_photons = self.account_for_charge_sharing_in_photon_list(
@@ -201,10 +204,10 @@ class HexitecPileUp():
         measured_photons = Table([Quantity([], unit=self.incident_photons["time"].unit),
                                   Quantity([], unit=self.incident_photons["energy"].unit),
                                   [], []], names=("time", "energy", "x", "y"))
-        for j in range(n_pixels[1]):
-            for i in range(n_pixels[0]):
+        for j in range(self.readout_ypixel_range[0], self.readout_ypixel_range[1]):
+            for i in range(self.readout_xpixel_range[0], self.readout_xpixel_range[1]):
                 print "Processing photons hitting pixel ({0}, {1}) of {2} at {3}".format(
-                    i, j, n_pixels, datetime.now())
+                        i, j, (self.readout_xpixel_range[1]-1, self.readout_ypixel_range[1]-1), datetime.now())
                 time1 = timeit.default_timer()
                 w = np.logical_and(pixelated_photons["x_pixel"] == i,
                                    pixelated_photons["y_pixel"] == j)
@@ -217,7 +220,7 @@ class HexitecPileUp():
                     measured_photons = vstack((measured_photons, pixel_measured_photons))
                 time2 = timeit.default_timer()
                 print "Finished processing pixel ({0}, {1}) of {2} in {3} s.".format(
-                    i, j, n_pixels, time2-time1)
+                    i, j, (self.readout_xpixel_range[1]-1, self.readout_ypixel_range[1]-1), time2-time1)
                 print " "
         # Sort photons by time and return to object.
         measured_photons.sort("time")
@@ -301,8 +304,10 @@ class HexitecPileUp():
     def _generate_random_photon_locations(self, n_photons):
         """Generates random photon hit locations."""
         # Generate random x locations for each photon.
-        x = np.random.uniform(self.xpixel_range[0], self.xpixel_range[1], n_photons)
-        y = np.random.uniform(self.ypixel_range[0], self.ypixel_range[1], n_photons)
+        x = np.random.uniform(
+                self.incident_xpixel_range[0], self.incident_xpixel_range[1], n_photons)
+        y = np.random.uniform(
+                self.incident_ypixel_range[0], self.incident_ypixel_range[1], n_photons)
         return x, y
 
 
@@ -320,29 +325,34 @@ class HexitecPileUp():
         x_pixels = np.full(n_photons_shared, np.nan)
         y_pixels = np.full(n_photons_shared, np.nan)
         energy = np.full(n_photons_shared, np.nan)
+        neighbor_positions = np.array([""]*n_photons_shared, dtype="S10")
         for i, photon in enumerate(incident_photons):
             # Find fraction of energy in central & neighbouring pixels.
-            x_shared_pixels, y_shared_pixels, fractional_energy_in_pixels = \
-              self._divide_charge_among_pixels(
-                  photon["x"], photon["y"], charge_cloud_x_sigma,
-                  charge_cloud_y_sigma, n_1d_neighbours)
+            x_shared_pixels, y_shared_pixels, fractional_energy_in_pixels, \
+            pixel_neighbor_positions = self._divide_charge_among_pixels(
+                    photon["x"], photon["y"], charge_cloud_x_sigma,
+                    charge_cloud_y_sigma, n_1d_neighbours)
             # Insert new shared photon parameters into relevant list.
             times[i*n_neighbours:(i+1)*n_neighbours] = photon["time"]
             x_pixels[i*n_neighbours:(i+1)*n_neighbours] = x_shared_pixels
             y_pixels[i*n_neighbours:(i+1)*n_neighbours] = y_shared_pixels
             energy[i*n_neighbours:(i+1)*n_neighbours] = \
               photon["energy"]*fractional_energy_in_pixels
+            neighbor_positions[i*n_neighbours:(i+1)*n_neighbours] = pixel_neighbor_positions
         # Discard any charge lost at edges of detector and events with
         # 0 energy.
         w = np.logical_and(
-            np.logical_and(x_pixels >= self.xpixel_range[0], x_pixels < self.xpixel_range[1]),
-            np.logical_and(y_pixels >= self.ypixel_range[0], y_pixels < self.ypixel_range[1]),
-            energy > 0.)
+                np.logical_and(x_pixels >= self.readout_xpixel_range[0],
+                               x_pixels < self.readout_xpixel_range[1]),
+                np.logical_and(y_pixels >= self.readout_ypixel_range[0],
+                               y_pixels < self.readout_ypixel_range[1]),
+                energy > 0.)
         # Combine shared photons into new table.
         pixelated_photons = Table([Quantity(times[w], incident_photons["time"].unit),
                                    Quantity(energy[w], incident_photons["energy"].unit),
-                                   x_pixels[w], y_pixels[w]],
-                                  names=("time", "energy", "x_pixel", "y_pixel"))
+                                   x_pixels[w], y_pixels[w], neighbor_positions],
+                                  names=("time", "energy", "x_pixel", "y_pixel",
+                                         "neighbor_positions"))
         return pixelated_photons
 
 
@@ -356,10 +366,12 @@ class HexitecPileUp():
         x_shared_pixels = np.array([x_hit_pixel+i for i in neighbours_range]*n_1d_neighbours)
         y_shared_pixels = np.array(
             [[y_hit_pixel+i]*n_1d_neighbours for i in neighbours_range]).flatten()
+        neighbor_positions = ["down left", "down", "down right", "left", "central",
+                              "right", "up left", "up", "up right"]
         # Find fraction of charge in each pixel.
         return x_shared_pixels, y_shared_pixels, self._integrate_gaussian2d(
             (x_shared_pixels, x_shared_pixels+1), (y_shared_pixels, y_shared_pixels+1),
-            x, y, x_sigma, y_sigma)
+            x, y, x_sigma, y_sigma), neighbor_positions
 
 
     def _charge_cloud_radius(d, T, V):
