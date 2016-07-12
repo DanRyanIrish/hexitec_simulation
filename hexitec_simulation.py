@@ -16,7 +16,7 @@ import pandas
 from scipy.special import erf
 
 # Defining max number of data points in a pandas dataframe.
-DATAFRAME_MAX_POINTS = 5e7
+DATAFRAME_MAX_POINTS = 1e8
 
 class HexitecSimulation():
     """Simulates how HEXITEC records incident photons."""
@@ -207,7 +207,8 @@ class HexitecSimulation():
         for j in range(self.readout_ypixel_range[0], self.readout_ypixel_range[1]):
             for i in range(self.readout_xpixel_range[0], self.readout_xpixel_range[1]):
                 print "Processing photons hitting pixel ({0}, {1}) of {2} at {3}".format(
-                        i, j, (self.readout_xpixel_range[1]-1, self.readout_ypixel_range[1]-1), datetime.now())
+                        i, j, (self.readout_xpixel_range[1]-1,
+                               self.readout_ypixel_range[1]-1), datetime.now())
                 time1 = timeit.default_timer()
                 w = np.logical_and(pixelated_photons["x_pixel"] == i,
                                    pixelated_photons["y_pixel"] == j)
@@ -220,7 +221,8 @@ class HexitecSimulation():
                     measured_photons = vstack((measured_photons, pixel_measured_photons))
                 time2 = timeit.default_timer()
                 print "Finished processing pixel ({0}, {1}) of {2} in {3} s.".format(
-                    i, j, (self.readout_xpixel_range[1]-1, self.readout_ypixel_range[1]-1), time2-time1)
+                    i, j, (self.readout_xpixel_range[1]-1, self.readout_ypixel_range[1]-1),
+                    time2-time1)
                 print " "
         # Sort photons by time and return to object.
         measured_photons.sort("time")
@@ -322,7 +324,6 @@ class HexitecSimulation():
         te_energy = 0.1
         # Select a random number to determine whether in incident
         # photon will produce fluorescence.
-        
         
 
     def account_for_charge_sharing_in_photon_list(self, incident_photons, charge_cloud_x_sigma,
@@ -466,45 +467,44 @@ class HexitecSimulation():
         # pandas time series.
         # Convert max points into max duration such that duration
         # includes an integer number of frames.
-        subseries_n_frames = int(DATAFRAME_MAX_POINTS*sample_step.value/frame_duration.value)
-        timeseries_n_frames = subseries_n_frames+2
-        subseries_max_duration = Quantity(subseries_n_frames*frame_duration)
-        # Determine lower time edges of each sub time series.
-        final_frame_upper_edge = int(
-                incident_photons["time"][-1]/frame_duration.value+1)*frame_duration.value
-        subseries_edges = np.arange(0, final_frame_upper_edge, subseries_max_duration.value)
-        if subseries_edges[-1] < final_frame_upper_edge:
-            subseries_edges = np.append(subseries_edges, final_frame_upper_edge)
-        subseries_edges = subseries_edges*incident_photons["time"].unit
+        subseries_max_frames = int(DATAFRAME_MAX_POINTS*sample_step.value/frame_duration.value)
+        subseries_max_duration = subseries_max_frames*frame_duration
+        # Determine start time and number of frames of each subtimeseries.
+        total_n_frames = int(incident_photons["time"][-1]/frame_duration.value+1)
+        subseries_frame_edges = np.arange(0, total_n_frames, subseries_max_frames)
+        if subseries_frame_edges[-1] < total_n_frames:
+            subseries_frame_edges = np.append(subseries_frame_edges, total_n_frames)
+        subseries_n_frames = subseries_frame_edges[1:]-np.roll(subseries_frame_edges, 1)[1:]
+        subseries_starts = subseries_frame_edges[:-1]*frame_duration
         # Define arrays to hold measured photons
         measured_photon_times = np.array([], dtype=float)
         measured_photon_energies = np.array([], dtype=float)
         # Use for loop to analyse each sub timeseries.
-        print "Photons will be analysed in {0} sub-timeseries.".format(len(subseries_edges)-1)
-        for i in range(len(subseries_edges)-1):
+        print "Photons will be analysed in {0} sub-timeseries.".format(len(subseries_starts))
+        for i in range(len(subseries_starts)):
             print "Processing subseries {0} of {1} at {2}".format(
-                i+1, len(subseries_edges)-1, datetime.now())
+                i+1, len(subseries_starts), datetime.now())
             time1 = timeit.default_timer()
             # Determine which photons are in current subseries.  Include
             # photons in the frames either side of the subseries edges
             # as their voltage pulses may influence the first and last
             # frames of the subseries.  Any detections in these outer
             # frames should be removed later.
-            timeseries_start = subseries_edges[i]-frame_duration
-            timeseries_end = subseries_edges[i+1]+frame_duration
-            timeseries_incident_photons = incident_photons[
-                np.logical_and(incident_photons["time"] >= timeseries_start,
-                               incident_photons["time"] < timeseries_end)]
+            subseries_start = subseries_starts[i]-frame_duration
+            n_frames_in_this_subseries = subseries_n_frames[i]+2
+            subseries_incident_photons = incident_photons[np.logical_and(
+                incident_photons["time"] >= subseries_start, incident_photons["time"] < \
+                subseries_start+n_frames_in_this_subseries*frame_duration)]
             # If there are photons in this subseries, continue.
             # Else move to next frame.
-            if len(timeseries_incident_photons) > 0:
+            if len(subseries_incident_photons) > 0:
                 # Generate sub time series of voltage pulses due to photons.
-                timeseries, timseries_voltage_unit = \
+                subseries, subseries_voltage_unit = \
                   self._convert_photons_to_voltage_timeseries(
-                      timeseries_incident_photons, timeseries_start, timeseries_n_frames)
+                      subseries_incident_photons, subseries_start, n_frames_in_this_subseries)
                 subseries_measured_photon_times, subseries_measured_photon_energies = \
                   self._convert_voltage_timeseries_to_measured_photons(
-                      timeseries, voltage_unit=timseries_voltage_unit)
+                      subseries, voltage_unit=subseries_voltage_unit)
                 subseries_measured_photon_times = subseries_measured_photon_times.to(
                     incident_photons["time"].unit)
                 subseries_measured_photon_energies = subseries_measured_photon_energies.to(
@@ -512,8 +512,9 @@ class HexitecSimulation():
                 # Add subseries measured photon times and energies to all
                 # photon times and energies Quantities excluding any
                 # photons from first or last frame.
-                w = np.logical_and(subseries_measured_photon_times >= subseries_edges[i],
-                                   subseries_measured_photon_times < subseries_edges[i+1])
+                w = np.logical_and(
+                    subseries_measured_photon_times >= subseries_starts[i],
+                    subseries_measured_photon_times < subseries_frame_edges[i+1]*frame_duration)
                 measured_photon_times = np.append(
                     measured_photon_times, subseries_measured_photon_times.value[w])
                 measured_photon_energies = np.append(
