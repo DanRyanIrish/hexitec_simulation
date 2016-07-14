@@ -5,7 +5,7 @@ from astropy.table import Table
 from astropy.units.quantity import Quantity
 
 import imp
-hexitec_pile_up = imp.load_source("hexitec_simulation", "../hexitec_simulation.py")
+hexitec_simulation = imp.load_source("hexitec_simulation", "../hexitec_simulation.py")
 
 FRAME_RATE = Quantity(3000, unit=1/u.s)
 
@@ -49,7 +49,7 @@ def test_simulate_hexitec_on_photon_list_1pixel():
     photon_energies = Quantity([1, 1, 2, 3, 5, 4, 6, 7, 8, 9, 10], unit=u.keV)
     photon_times = Quantity(np.array(
         [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 4.5, 6., 7.5, 7.5,
-         (hexitec_pile_up.DATAFRAME_MAX_POINTS*hpu._sample_step/hpu.frame_duration).si.value+0.5
+         (hexitec_simulation.DATAFRAME_MAX_POINTS*hpu._sample_step/hpu.frame_duration).si.value+0.5
         ])*hpu.frame_duration, unit=u.s)
     incident_photons = Table([photon_times, photon_energies], names=("time", "energy"))
     # Define expected output photon list.
@@ -58,7 +58,7 @@ def test_simulate_hexitec_on_photon_list_1pixel():
     expected_energies = Quantity([1, 3, 5, 6, 7*f, 7, 17, 10], unit=u.keV)
     expected_times = np.array(
         [0., 1., 2., 4., 5., 6., 7.,
-         (hexitec_pile_up.DATAFRAME_MAX_POINTS*hpu._sample_step/hpu.frame_duration).si.value]
+         (hexitec_simulation.DATAFRAME_MAX_POINTS*hpu._sample_step/hpu.frame_duration).si.value]
         )*hpu.frame_duration
     expected_photons = Table([expected_times, expected_energies], names=("time", "energy"))
     # Calculate test measured photon list by calling
