@@ -23,8 +23,46 @@ class HexitecSimulation():
 
     def __init__(self, frame_rate=Quantity(3900., unit=1/u.s),
                  incident_xpixel_range=(0,80), incident_ypixel_range=(0,80),
-                 readout_xpixel_range=(0,80), readout_ypixel_range=(0,80)):
-        """Instantiates a HexitecPileUp object."""
+                 readout_xpixel_range=(0,80), readout_ypixel_range=(0,80),
+                 charge_cloud_sigma=None, charge_drift_length=1*u.mm,
+                 detector_temperature=17.2*u.Celsius, bias_voltage=500*u.V):
+        """
+        Instantiates a HexitecPileUp object.
+
+        Parameters
+        ----------
+        frame_rate : `astropy.units.quantity.Quantity`
+            Operating frame rate of ASIC.
+        incident_xpixel_range : 2-element `tuple`
+            The lower and upper edges of the range of pixels in the
+            x-direction upon which incident photons fall.
+        incident_ypixel_range : 2-element `tuple`
+            The lower and upper edges of the range of pixels in the
+            y-direction upon which incident photons fall.
+        readout_xpixel_range : 2-element `tuple`
+            The lower and upper edges of the range of pixels in the
+            x-direction to be read out.
+        readout_ypixel_range : 2-element `tuple`
+            The lower and upper edges of the range of pixels in the
+            x-direction to be read out.
+        charge_cloud_sigma : `astropy.units.quantity.Quantity`
+            Standard deviation of charge cloud assuming it to be a
+            2D symmetric gaussian. Default=None.
+            If not set, the charge clous standard deviation is calculated
+            with self._charge_cloud_sigma() using charge_drift_length,
+            detector_temperature, and bias_voltage inputs (below).
+        charge_drift_length : `astropy.units.quantity.Quantity`
+            Drift length of charge cloud from site of photon interaction to
+            anode. Given by CdTe thickness - mean free path of photon in CdTe.
+            Default=1mm
+        detector_temperature : `astropy.units.quantity.Quantity`
+            Operating temperature of the detector.
+            Default=17.2C
+        bias_voltage : `astropy.units.quantity.Quantity`
+            Operating bias voltage of detector.
+            Default=500V
+
+        """
         # Define some magic numbers. N.B. _sample_unit must be in string
         # format so it can be used for Quantities and numpy datetime64.
         self._sample_unit = 'ns'
@@ -42,10 +80,15 @@ class HexitecSimulation():
         self.readout_xpixel_range = readout_xpixel_range
         self.readout_ypixel_range = readout_ypixel_range
         self._n_1d_neighbours = 3
-        charge_cloud_3sigma = 86.875/250.  # charge cloud diameter/pixel length
-        #charge_cloud_3sigma = 17.2/250.  # charge cloud diameter/pixel length
-        self._charge_cloud_x_sigma = charge_cloud_3sigma/3.
-        self._charge_cloud_y_sigma = charge_cloud_3sigma/3.
+        pixel_pitch = 250*u.um
+        # Charge cloud standard deviation in units of pixel length.
+        if charge_cloud_sigma:
+            self._charge_cloud_x_sigma = charge_cloud_x_sigma
+            self._charge_cloud_y_sigma = charge_cloud_y_sigma
+        else:
+            self._charge_cloud_x_sigma = self._charge_cloud_y_sigma = \
+              self._charge_cloud_sigma(charge_drift_length, detector_temperature,
+                                       bias_voltage).to(u.um).value/pixel_pitch.to(u.um).value
 
 
     def simulate_hexitec_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
@@ -389,24 +432,24 @@ class HexitecSimulation():
             x, y, x_sigma, y_sigma), neighbor_positions
 
 
-    def _charge_cloud_radius(d, T, V):
+    def _charge_cloud_sigma(charge_drift_length, detector_temperature, bias_voltage):
         """
-        Returns the radius of the charge cloud when is reaches the anode.
+        Returns the standard deviation of the charge cloud when is reaches the anode.
 
         Parameters
         ----------
-        d : `astropy.units.quantity.Quantity`
+        charge_drift_length : `astropy.units.quantity.Quantity`
             Drift length of charge cloud from site of photon interactiont to anode.
             Given by CdTe thickness - mean free path of photon in CdTe.
-        T : `astropy.units.quantity.Quantity`
+        detector_temperature : `astropy.units.quantity.Quantity`
             Operating temperature of the detector.
-        V : `astropy.units.quantity.Quantity`
+        bias_voltage : `astropy.units.quantity.Quantity`
             Operating bias voltage of detector.
 
         Returns
         -------
-        r : `astropy.units.quantity.Quantity`
-            Radius of charge cloud at anode.
+        sigma : `astropy.units.quantity.Quantity`
+            1D standard deviation of charge cloud at anode.
 
         References
         ----------
@@ -414,14 +457,16 @@ class HexitecSimulation():
         [2] : Iniewski et al. (2007)
 
         """
-        # Determine initial radius of charge cloud, r0, from empirical
-        # relation derived by Veale et al. (2014).
-        r0 = Quantity(0.1477*T.to(u.Celsius).value+14.66, unit="um")
-        # Return Quantity of radius at anode.  Is the unit system correct?  I don't think so.  Check!
-        return r0 + Quantity(1.15*d.si.value* \
-                             (2*constants.k_B.si.value*T.to(u.Celsius).value/ \
-                              (constants.e.si.value*abs(V.to("V").value)))**0.5,
-                              unit="um")
+        # Determine initial radius of charge cloud (FWHM), r0, from
+        # empirical relation derived by Veale et al. (2014) (Fig. 8).
+        r0 = Quantity(0.1477*T.to(u.Celsius, equivalencies=u.temperature()).value+14.66,
+                      unit="um")
+        # Determine radius (FWHM) at anode.
+        r = r0 + 1.15*d*np.sqrt(
+            2*constants.k_B.si.value*T.to(u.K, equivalencies=u.temperature()).value/(
+            constants.e.si.value*abs(V.si.value)))
+        # Convert FWHM to sigma.
+        return r.to(u.um)/1.15
 
 
     def _integrate_gaussian(self, limits, mu, sigma):
@@ -492,7 +537,8 @@ class HexitecSimulation():
         # Use for loop to analyse each sub timeseries.
         print "Photons will be analysed in {0} sub-timeseries.".format(n_subseries)
         for i in range(n_subseries):
-            print "Processing subseries {0} of {1} at {2}".format(i+1, n_subseries, datetime.now())
+            print "Processing subseries {0} of {1} at {2}".format(i+1, n_subseries,
+                                                                  datetime.now())
             time1 = timeit.default_timer()
 
             # Determine which photons are in current subseries.  Include
@@ -531,7 +577,8 @@ class HexitecSimulation():
             # to frames in subseries_photons_frame_numbers array.
             ind = np.arange(n_subseries_frames)[np.in1d(subseries_frame_numbers,
                                                         subseries_photon_frame_numbers)]
-            inds_nested = [[ind[j]]*n_photons_per_frame[j] for j in range(len(n_photons_per_frame))]
+            inds_nested = [[ind[j]]*n_photons_per_frame[j]
+                           for j in range(len(n_photons_per_frame))]
             inds = [item for sublist in inds_nested for item in sublist]
             # Get frames skipped as a function of subseries frame number.
             m = np.insert(subseries_frame_numbers, 0, 0)
