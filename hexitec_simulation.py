@@ -432,7 +432,7 @@ class HexitecSimulation():
             x, y, x_sigma, y_sigma), neighbor_positions
 
 
-    def _charge_cloud_sigma(charge_drift_length, detector_temperature, bias_voltage):
+    def _charge_cloud_sigma(self, charge_drift_length, detector_temperature, bias_voltage):
         """
         Returns the standard deviation of the charge cloud when is reaches the anode.
 
@@ -459,12 +459,14 @@ class HexitecSimulation():
         """
         # Determine initial radius of charge cloud (FWHM), r0, from
         # empirical relation derived by Veale et al. (2014) (Fig. 8).
-        r0 = Quantity(0.1477*T.to(u.Celsius, equivalencies=u.temperature()).value+14.66,
-                      unit="um")
+        r0 = Quantity(
+            0.1477*detector_temperature.to(u.Celsius, equivalencies=u.temperature()).value+14.66,
+            unit="um")
         # Determine radius (FWHM) at anode.
-        r = r0 + 1.15*d*np.sqrt(
-            2*constants.k_B.si.value*T.to(u.K, equivalencies=u.temperature()).value/(
-            constants.e.si.value*abs(V.si.value)))
+        r = r0 + 1.15*charge_drift_length*np.sqrt(
+            2*constants.k_B.si.value*detector_temperature.to(
+                u.K, equivalencies=u.temperature()).value/ \
+                (constants.e.si.value*abs(bias_voltage.si.value)))
         # Convert FWHM to sigma.
         return r.to(u.um)/1.15
 
