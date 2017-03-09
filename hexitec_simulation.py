@@ -202,13 +202,13 @@ class HexitecSimulation():
         cdf_lower = np.insert(cdf_upper, 0, 0.)
         cdf_lower = np.delete(cdf_lower, -1)
         # Generate random numbers representing CDF values.
-        print "Generating random numbers for photon energy transformation."
+        print("Generating random numbers for photon energy transformation.")
         time1 = timeit.default_timer()
         randoms = np.asarray([random.random() for i in range(n_counts)])*cdf_upper[-1]
         time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
+        print("Finished in {0} s.".format(time2-time1))
         # Generate array of spectrum bin indices.
-        print "Transforming random numbers into photon energies."
+        print("Transforming random numbers into photon energies.")
         time1 = timeit.default_timer()
         bin_indices = np.arange(len(self.incident_spectrum["lower_bin_edges"]))
         # Generate random energies from randomly generated CDF values.
@@ -223,7 +223,7 @@ class HexitecSimulation():
         photons = Table([photon_waiting_times.cumsum(), photon_energies],
                         names=("time", "energy"))
         time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
+        print("Finished in {0} s.".format(time2-time1))
         return photons
 
 
@@ -249,9 +249,9 @@ class HexitecSimulation():
                                   [], []], names=("time", "energy", "x", "y"))
         for j in range(self.readout_ypixel_range[0], self.readout_ypixel_range[1]):
             for i in range(self.readout_xpixel_range[0], self.readout_xpixel_range[1]):
-                print "Processing photons hitting pixel ({0}, {1}) of {2} at {3}".format(
+                print("Processing photons hitting pixel ({0}, {1}) of {2} at {3}".format(
                         i, j, (self.readout_xpixel_range[1]-1,
-                               self.readout_ypixel_range[1]-1), datetime.now())
+                               self.readout_ypixel_range[1]-1), datetime.now()))
                 time1 = timeit.default_timer()
                 w = np.logical_and(pixelated_photons["x_pixel"] == i,
                                    pixelated_photons["y_pixel"] == j)
@@ -263,10 +263,10 @@ class HexitecSimulation():
                     pixel_measured_photons["y"] = [j]*len(pixel_measured_photons)
                     measured_photons = vstack((measured_photons, pixel_measured_photons))
                 time2 = timeit.default_timer()
-                print "Finished processing pixel ({0}, {1}) of {2} in {3} s.".format(
+                print("Finished processing pixel ({0}, {1}) of {2} in {3} s.".format(
                     i, j, (self.readout_xpixel_range[1]-1, self.readout_ypixel_range[1]-1),
-                    time2-time1)
-                print " "
+                    time2-time1))
+                print(" ")
         # Sort photons by time and return to object.
         measured_photons.sort("time")
         self.measured_photons = measured_photons
@@ -320,13 +320,13 @@ class HexitecSimulation():
         cdf_lower = np.insert(cdf_upper, 0, 0.)
         cdf_lower = np.delete(cdf_lower, -1)
         # Generate random numbers representing CDF values.
-        print "Generating random numbers for photon energy transformation."
+        print("Generating random numbers for photon energy transformation.")
         time1 = timeit.default_timer()
         randoms = np.asarray([random.random() for i in range(n_counts)])*cdf_upper[-1]
         time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
+        print("Finished in {0} s.".format(time2-time1))
         # Generate array of spectrum bin indices.
-        print "Transforming random numbers into photon energies."
+        print("Transforming random numbers into photon energies.")
         time1 = timeit.default_timer()
         bin_indices = np.arange(len(self.incident_spectrum["lower_bin_edges"]))
         # Generate random energies from randomly generated CDF values.
@@ -334,7 +334,7 @@ class HexitecSimulation():
             bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
             for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
         time2 = timeit.default_timer()
-        print "Finished in {0} s.".format(time2-time1)
+        print("Finished in {0} s.".format(time2-time1))
         return photon_energies
 
 
@@ -408,7 +408,7 @@ class HexitecSimulation():
         # Combine shared photons into new table.
         pixelated_photons = Table([Quantity(times[w], incident_photons["time"].unit),
                                    Quantity(energy[w], incident_photons["energy"].unit),
-                                   x_pixels[w], y_pixels[w], neighbor_positions],
+                                   x_pixels[w], y_pixels[w], neighbor_positions[w]],
                                   names=("time", "energy", "x_pixel", "y_pixel",
                                          "neighbor_positions"))
         return pixelated_photons
@@ -420,7 +420,7 @@ class HexitecSimulation():
         x_hit_pixel = int(x)
         y_hit_pixel = int(y)
         half_nearest = (n_1d_neighbours-1)/2
-        neighbours_range = range(-half_nearest, half_nearest+1)
+        neighbours_range = np.arange(-half_nearest, half_nearest+1)
         x_shared_pixels = np.array([x_hit_pixel+i for i in neighbours_range]*n_1d_neighbours)
         y_shared_pixels = np.array(
             [[y_hit_pixel+i]*n_1d_neighbours for i in neighbours_range]).flatten()
@@ -428,7 +428,7 @@ class HexitecSimulation():
                               "right", "up left", "up", "up right"]
         # Find fraction of charge in each pixel.
         return x_shared_pixels, y_shared_pixels, self._integrate_gaussian2d(
-            (x_shared_pixels, x_shared_pixels+1), (y_shared_pixels, y_shared_pixels+1),
+            (x_shared_pixels, x_shared_pixels + 1), (y_shared_pixels, y_shared_pixels + 1),
             x, y, x_sigma, y_sigma), neighbor_positions
 
 
@@ -510,7 +510,7 @@ class HexitecSimulation():
         #self.incident_photons = incident_photons
         sample_step = self._sample_step.to(incident_photons["time"].unit)
         frame_duration = self.frame_duration.to(incident_photons["time"].unit)
-        samples_per_frame = int(round(frame_duration/sample_step.to(frame_duration.unit)))
+        samples_per_frame = int(round((frame_duration/sample_step.to(frame_duration.unit)).value))
         frame_duration_in_sample_unit = int(round(frame_duration.to(self._sample_unit).value))
         # Determine how many frames will be needed to model all photons
         # hitting pixel.
@@ -537,10 +537,10 @@ class HexitecSimulation():
         measured_photon_times = np.array([], dtype=float)
         measured_photon_energies = np.array([], dtype=float)
         # Use for loop to analyse each sub timeseries.
-        print "Photons will be analysed in {0} sub-timeseries.".format(n_subseries)
+        print("Photons will be analysed in {0} sub-timeseries.".format(n_subseries))
         for i in range(n_subseries):
-            print "Processing subseries {0} of {1} at {2}".format(i+1, n_subseries,
-                                                                  datetime.now())
+            print("Processing subseries {0} of {1} at {2}".format(i+1, n_subseries,
+                                                                  datetime.now()))
             time1 = timeit.default_timer()
 
             # Determine which photons are in current subseries.  Include
@@ -648,8 +648,8 @@ class HexitecSimulation():
             measured_photon_energies = np.append(
                 measured_photon_energies, subseries_measured_photon_energies.value[w])
             time2 = timeit.default_timer()
-            print "Finished {0}th subseries in {1} s".format(i+1, time2-time1)
-            print " "
+            print("Finished {0}th subseries in {1} s".format(i+1, time2-time1))
+            print(" ")
         # Convert results into table and return.
         return Table(
             [Quantity(measured_photon_times, unit=incident_photons["time"].unit),
