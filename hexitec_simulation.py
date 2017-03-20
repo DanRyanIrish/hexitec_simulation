@@ -83,8 +83,8 @@ class HexitecSimulation():
         pixel_pitch = 250*u.um
         # Charge cloud standard deviation in units of pixel length.
         if charge_cloud_sigma:
-            self._charge_cloud_x_sigma = charge_cloud_x_sigma
-            self._charge_cloud_y_sigma = charge_cloud_y_sigma
+            self._charge_cloud_x_sigma = charge_cloud_sigma
+            self._charge_cloud_y_sigma = charge_cloud_sigma
         else:
             self._charge_cloud_x_sigma = self._charge_cloud_y_sigma = \
               self._charge_cloud_sigma(charge_drift_length, detector_temperature,
