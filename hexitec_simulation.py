@@ -289,7 +289,8 @@ class HexitecSimulation():
                     if self.threshold.shape == ():
                         threshold = self.threshold
                     else:
-                        threshold = self.threshold[i, j]
+                        threshold = self.threshold[i-self.readout_xpixel_range[0],
+                                                   j-self.readout_ypixel_range[0]]
                     pixel_measured_photons = \
                       self.simulate_hexitec_on_photon_list_1pixel(pixelated_photons[w],
                                                                   threshold=threshold)
@@ -723,6 +724,12 @@ class HexitecSimulation():
 
         Returns
         -------
+        measured_photon_times: `astropy.units.quantity.Quantity`
+            HEXITEC measured times of photon hits.
+
+        measured_photon_energies: `astropy.units.quantity.Quantity`
+            HEXITEC measured energies of photons.
+
         """
         # Convert timeseries into measured photon list by resampling
         # at frame rate and taking min.
@@ -778,10 +785,34 @@ class HexitecSimulation():
 
 
     def _convert_photon_energy_to_voltage(self, photon_energy):
-        """Determines HEXITEC peak voltage due photon of given energy."""
+        """Determines HEXITEC peak voltage due to photon of given energy.
+
+        Parameters
+        ----------
+        photon_energy: `astropy.units.quantity.Quantity`
+            Photon energy to be converted to HEXITEC voltage.
+
+        Returns
+        -------
+        voltage: `astropy.units.quantity.Quantity`
+            Voltage corresponding to input photon energy.
+
+        """
         return -photon_energy.to(u.keV).value*u.V
 
 
     def _convert_voltages_to_photon_energy(self, voltages, voltage_unit):
-        """Determines photon energy from HEXITEC peak voltage."""
+        """Determines photon energy from HEXITEC peak voltage.
+
+        Parameters
+        ----------
+        voltage: `astropy.units.quantity.Quantity`
+            HEXITEC pixel voltage to be converted to photon energy.
+
+        Returns
+        -------
+        photon_energy: `astropy.units.quantity.Quantity`
+            Photon energy corresponding to input voltage.
+
+        """
         return -Quantity(voltages, unit=voltage_unit).to(u.V).value*u.keV
