@@ -62,12 +62,17 @@ class HexitecSimulation():
             Operating bias voltage of detector.
             Default=None
         threshold: `astropy.units.quantity.Quantity`
-            Threshold below which photons are not recorded.  Must be in units
-            of energy or voltage.  If unit is energy, threshold refers to
-            photon energy.  If unit is voltage, threshold refers to voltage
-            induced in pixel due to a photon hit which is a function of the
-            photon's energy.
-            Default=None implies a threshold of 0
+            Threshold(s) below which photons are not recorded.  Can be a
+            single value or have same shape as readout pixel region,
+            (number_readout_xpixels, number_readout_ypixels), one threshold
+            value for each readout pixel.  If single value, that value is
+            applied to all pixels.  If array, the threshold value in each
+            element is applied to the corresponding pixel.
+            Must be in units of energy or voltage.  If unit is energy,
+            threshold refers to photon energy.  If unit is voltage, threshold
+            refers to voltage induced in pixel due to a photon hit which is a
+            function of the photon's energy.
+            Default=None implies a threshold of 0V
 
         """
         # Define some magic numbers. N.B. _sample_unit must be in string
@@ -97,6 +102,18 @@ class HexitecSimulation():
               self._charge_cloud_sigma(charge_drift_length, detector_temperature,
                                        bias_voltage).to(u.um).value/pixel_pitch.to(u.um).value
         # Define threshold
+        if threshold is None:
+            threshold = 0.*u.V
+        # Check threshold is of correct type and shape
+        if type(threshold) is not Quantity:
+            raise TypeError("threshold must be an astropy.units.quantity.Quantity")
+        if threshold.shape != () and threshold.shape != \
+                (readout_xpixel_range[1]-readout_xpixel_range[0],
+                 readout_ypixel_range[1]-readout_ypixel_range[0]):
+            raise TypeError("threshold must be a single value or have the same shape as the "
+                            "same shape as the readout pixel region, "
+                            "i.e. {0}".format((readout_xpixel_range[1]-readout_xpixel_range[0],
+                                               readout_ypixel_range[1]-readout_ypixel_range[0])))
         self.threshold = threshold
 
 
@@ -262,11 +279,20 @@ class HexitecSimulation():
                         i, j, (self.readout_xpixel_range[1]-1,
                                self.readout_ypixel_range[1]-1), datetime.now()))
                 time1 = timeit.default_timer()
+                # Find which photons in list, if any, are in given pixel.
                 w = np.logical_and(pixelated_photons["x_pixel"] == i,
                                    pixelated_photons["y_pixel"] == j)
+                # If photons did hit given pixel, simulate how HEXITEC
+                # interprets them.
                 if w.any():
+                    # Define threshold for pixel.
+                    if self.threshold.shape == ():
+                        threshold = self.threshold
+                    else:
+                        threshold = self.threshold[i, j]
                     pixel_measured_photons = \
-                      self.simulate_hexitec_on_photon_list_1pixel(pixelated_photons[w])
+                      self.simulate_hexitec_on_photon_list_1pixel(pixelated_photons[w],
+                                                                  threshold=threshold)
                     # Add pixel info to pixel_measured_photons table.
                     pixel_measured_photons["x"] = [i]*len(pixel_measured_photons)
                     pixel_measured_photons["y"] = [j]*len(pixel_measured_photons)
@@ -490,7 +516,7 @@ class HexitecSimulation():
           self._integrate_gaussian(y_limits, y_mu, y_sigma)
 
 
-    def simulate_hexitec_on_photon_list_1pixel(self, incident_photons):
+    def simulate_hexitec_on_photon_list_1pixel(self, incident_photons, threshold=None):
         """
         Simulates how HEXITEC records incoming photons in a single pixel.
 
@@ -507,6 +533,15 @@ class HexitecSimulation():
           Table of photons incident on the pixel.  Contains the following columns
           time : Amount of time passed from beginning of observing until photon hit.
           energy : Energy of each photon.
+
+        threshold: `astropy.units.quantity.Quantity`
+            Threshold below which photons are not recorded.
+            Must be in units of energy or voltage.  If unit is energy,
+            threshold refers to photon energy.  If unit is voltage, threshold
+            refers to voltage induced in pixel due to a photon hit which is a
+            function of the photon's energy.
+            Default=None implies a threshold of 0V
+
 
         Returns
         -------
@@ -640,7 +675,7 @@ class HexitecSimulation():
             # times and energies.
             subseries_measured_photon_times, subseries_measured_photon_energies = \
               self._convert_voltage_timeseries_to_measured_photons(
-                  subseries, voltage_unit=subseries_voltage_unit, threshold=self.threshold)
+                  subseries, voltage_unit=subseries_voltage_unit, threshold=threshold)
             subseries_measured_photon_times = subseries_measured_photon_times.to(
                 incident_photons["time"].unit)
             subseries_measured_photon_energies = subseries_measured_photon_energies.to(
@@ -667,7 +702,28 @@ class HexitecSimulation():
 
 
     def _convert_voltage_timeseries_to_measured_photons(self, timeseries, voltage_unit, threshold=None):
-        """Converts a time series of HEXITEC voltage to measured photons."""
+        """Converts a time series of HEXITEC voltage to measured photons.
+
+        Parameters
+        ----------
+        timeseries: `pandas.DataFrame`
+            Time series of voltage single of single HEXITEC pixel due to photon hits.
+
+        voltage_unit: `astropy.units.core.Unit` or `str`
+            Unit of timeseries.  Must be compatible with
+            `astropy.units.quantity.Quantity`.
+
+        threshold: `astropy.units.quantity.Quantity`
+            Threshold below which photons are not recorded.
+            Must be in units of energy or voltage.  If unit is energy,
+            threshold refers to photon energy.  If unit is voltage, threshold
+            refers to voltage induced in pixel due to a photon hit which is a
+            function of the photon's energy.
+            Default=None implies a threshold of 0V
+
+        Returns
+        -------
+        """
         # Convert timeseries into measured photon list by resampling
         # at frame rate and taking min.
         # In resample command, 'xN' signifies x nanoseconds.
@@ -728,4 +784,4 @@ class HexitecSimulation():
 
     def _convert_voltages_to_photon_energy(self, voltages, voltage_unit):
         """Determines photon energy from HEXITEC peak voltage."""
-        return -(voltages*voltage_unit).to(u.V).value*u.keV
+        return -Quantity(voltages, unit=voltage_unit).to(u.V).value*u.keV
