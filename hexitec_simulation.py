@@ -25,7 +25,7 @@ class HexitecSimulation():
                  incident_xpixel_range=(0,80), incident_ypixel_range=(0,80),
                  readout_xpixel_range=(0,80), readout_ypixel_range=(0,80),
                  charge_cloud_sigma=None, charge_drift_length=1*u.mm,
-                 detector_temperature=17.2*u.Celsius, bias_voltage=500*u.V):
+                 detector_temperature=None, bias_voltage=None, threshold=None):
         """
         Instantiates a HexitecPileUp object.
 
@@ -57,10 +57,17 @@ class HexitecSimulation():
             Default=1mm
         detector_temperature : `astropy.units.quantity.Quantity`
             Operating temperature of the detector.
-            Default=17.2C
+            Default=None
         bias_voltage : `astropy.units.quantity.Quantity`
             Operating bias voltage of detector.
-            Default=500V
+            Default=None
+        threshold: `astropy.units.quantity.Quantity`
+            Threshold below which photons are not recorded.  Must be in units
+            of energy or voltage.  If unit is energy, threshold refers to
+            photon energy.  If unit is voltage, threshold refers to voltage
+            induced in pixel due to a photon hit which is a function of the
+            photon's energy.
+            Default=None implies a threshold of 0
 
         """
         # Define some magic numbers. N.B. _sample_unit must be in string
@@ -89,6 +96,8 @@ class HexitecSimulation():
             self._charge_cloud_x_sigma = self._charge_cloud_y_sigma = \
               self._charge_cloud_sigma(charge_drift_length, detector_temperature,
                                        bias_voltage).to(u.um).value/pixel_pitch.to(u.um).value
+        # Define threshold
+        self.threshold = threshold
 
 
     def simulate_hexitec_on_spectrum_1pixel(self, incident_spectrum, photon_rate, n_photons):
@@ -631,7 +640,7 @@ class HexitecSimulation():
             # times and energies.
             subseries_measured_photon_times, subseries_measured_photon_energies = \
               self._convert_voltage_timeseries_to_measured_photons(
-                  subseries, voltage_unit=subseries_voltage_unit)
+                  subseries, voltage_unit=subseries_voltage_unit, threshold=self.threshold)
             subseries_measured_photon_times = subseries_measured_photon_times.to(
                 incident_photons["time"].unit)
             subseries_measured_photon_energies = subseries_measured_photon_energies.to(
@@ -657,7 +666,7 @@ class HexitecSimulation():
             names=("time", "energy"))
 
 
-    def _convert_voltage_timeseries_to_measured_photons(self, timeseries, voltage_unit):
+    def _convert_voltage_timeseries_to_measured_photons(self, timeseries, voltage_unit, threshold=None):
         """Converts a time series of HEXITEC voltage to measured photons."""
         # Convert timeseries into measured photon list by resampling
         # at frame rate and taking min.
@@ -665,7 +674,18 @@ class HexitecSimulation():
         frame_peaks = timeseries.resample(
             "{0}N".format(int(self.frame_duration.to(u.ns).value)), how=min).fillna(0)
         # Convert voltages back to photon energies
-        threshold = 0.
+        if threshold is None:
+            threshold = 0.
+        else:
+            try:
+                threshold = self._convert_photon_energy_to_voltage(threshold).value
+            except u.UnitConversionError:
+                threshold = threshold.to(u.V).value
+            except u.UnitConversionError as err:
+                err.args = (
+                    "'{0}' not convertible to either 'keV' (energy) or 'V' (voltage)".format(
+                        threshold.unit),)
+                raise err
         w = np.where(frame_peaks["voltage"] < threshold)[0]
         measured_photon_energies = self._convert_voltages_to_photon_energy(
             frame_peaks["voltage"][w].values, voltage_unit)
