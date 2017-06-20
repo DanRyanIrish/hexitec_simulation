@@ -379,7 +379,7 @@ class HexitecSimulation():
         """Generates random photon times."""
         # Generate random waiting times before each photon.
         photon_waiting_times = Quantity(
-            np.random.exponential(1./self.photon_rate, n_photons), unit='s')
+            np.random.exponential((1./self.photon_rate).to(u.s).value, n_photons), unit='s')
         return photon_waiting_times.cumsum()
 
 
