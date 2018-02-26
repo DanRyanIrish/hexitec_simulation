@@ -5,7 +5,8 @@ from astropy.table import Table
 from astropy.units.quantity import Quantity
 
 import imp
-hexitec_simulation = imp.load_source("hexitec_simulation", "../hexitec_simulation.py")
+#hexitec_simulation = imp.load_source("hexitec_simulation", "../hexitec_simulation.py")
+hexitec_simulation = imp.load_source("hexitec_simulation", "hexitec_simulation.py")
 
 FRAME_RATE = Quantity(3000, unit=1/u.s)
 
@@ -28,23 +29,25 @@ def test_generate_random_photons_from_spectrum():
                               names=("lower_bin_edges", "upper_bin_edges", "counts"))
     # Use generate_random_counts_from_spectrum() to sample count list.
     n_counts = 1000
-    hpu = hexitec_simulation.HexitecSimulation(frame_rate=FRAME_RATE)
+    hpu = hexitec_simulation.HexitecSimulation(
+        frame_rate=FRAME_RATE, detector_temperature=17*u.deg_C, bias_voltage=-500*u.V)
     test_photons = hpu.generate_random_photons_from_spectrum(
         expected_spectrum, Quantity(1e-3, unit=1/u.s), n_counts)
     # Turn list of counts into a spectrum.
     bins = list(lower_bin_edges.value)
     bins.append(upper_bin_edges.value[-1])
-    test_counts = np.histogram(test_photons["energy"], bins=bins)    
+    test_counts = np.histogram(test_photons["energy"], bins=bins)[0]
     # Assert where test_spectrum has significant number of counts, that
     # they are approximately equal to true_spectrums when scaled to n_counts.
     w = np.where(test_counts > 10.)[0]
-    np.testing.assert_allclose(expected_counts[w]/(expected_counts[0]/test_counts[0]),
-                               test_counts[w], rtol=0.01)
+    np.testing.assert_allclose((expected_counts[w]/(expected_counts[0]/test_counts[0])).value,
+                               test_counts[w], rtol=0.1)
 
 def test_simulate_hexitec_on_photon_list_1pixel():
     """Test simulate_masking_photon_list_1pixel()."""
     # Define a HexitecPileUp object.
-    hpu = hexitec_simulation.HexitecSimulation(frame_rate=FRAME_RATE)
+    hpu = hexitec_simulation.HexitecSimulation(
+        frame_rate=FRAME_RATE, detector_temperature=17*u.deg_C, bias_voltage=-500*u.V)
     # Define input photon list and waiting times.
     photon_energies = Quantity([1, 1, 2, 3, 5, 4, 6, 7, 8, 9, 10], unit=u.keV)
     photon_times = Quantity(np.array(
@@ -60,7 +63,9 @@ def test_simulate_hexitec_on_photon_list_1pixel():
         [0., 1., 2., 4., 5., 6., 7.,
          (hexitec_simulation.DATAFRAME_MAX_POINTS*hpu._sample_step/hpu.frame_duration).si.value]
         )*hpu.frame_duration
-    expected_photons = Table([expected_times, expected_energies], names=("time", "energy"))
+    expected_next_frame_energy = Quantity([0., 0., 0., 0., 7., 0., 0., 0.], unit=u.keV)
+    expected_photons = Table([expected_times, expected_energies, expected_next_frame_energy],
+                             names=("time", "energy", "next frame first energy"))
     # Calculate test measured photon list by calling
     # simulate_hexitec_photon_list_1pixel().
     hpu.measured_photons = hpu.simulate_hexitec_on_photon_list_1pixel(incident_photons)
@@ -68,6 +73,8 @@ def test_simulate_hexitec_on_photon_list_1pixel():
     np.testing.assert_allclose(hpu.measured_photons["time"], expected_photons["time"],
                                atol=hpu.frame_duration.to(hpu.measured_photons["time"].unit).value)
     assert all(hpu.measured_photons["energy"] == expected_photons["energy"])
+    assert all(hpu.measured_photons["next frame first energy"] == \
+               expected_photons["next frame first energy"])
 
 def test_account_for_charge_sharing_in_photon_list():
     """Test account_for_charge_sharing_in_photon_list()."""

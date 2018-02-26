@@ -244,7 +244,7 @@ class HexitecSimulation():
             for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
         # Generate random waiting times before each photon.
         photon_waiting_times = Quantity(
-            np.random.exponential(1./self.photon_rate, n_photons), unit='s')
+            np.random.exponential(1./self.photon_rate.value, n_photons), unit='s')
         # Associate photon energies and time since start of
         # observation (time=0) in output table.
         photons = Table([photon_waiting_times.cumsum(), photon_energies],
@@ -582,6 +582,7 @@ class HexitecSimulation():
         # Define arrays to hold measured photons
         measured_photon_times = np.array([], dtype=float)
         measured_photon_energies = np.array([], dtype=float)
+        next_frame_first_energies = np.array([], dtype=float)
         measured_subframe_photon_times = np.array([], dtype=float)
         # Use for loop to analyse each sub timeseries.
         print("Photons will be analysed in {0} sub-timeseries.".format(n_subseries))
@@ -626,8 +627,9 @@ class HexitecSimulation():
             # to frames in subseries_photons_frame_numbers array.
             ind = np.arange(n_subseries_frames)[np.in1d(subseries_frame_numbers,
                                                         subseries_photon_frame_numbers)]
-            inds_nested = [[ind[j]]*n_photons_per_frame[j]
-                           for j in range(len(n_photons_per_frame))]
+            n_photons_gt_0_per_frame = n_photons_per_frame[n_photons_per_frame > 0]
+            inds_nested = [[ind[j]]*n_photons_gt_0_per_frame[j]
+                           for j in range(len(n_photons_gt_0_per_frame))]
             inds = [item for sublist in inds_nested for item in sublist]
             # Get frames skipped as a function of subseries frame number.
             m = np.insert(subseries_frame_numbers, 0, 0)
@@ -676,14 +678,16 @@ class HexitecSimulation():
 
             # Calculate how HEXITEC peak-hold would measure photon
             # times and energies.
-            subseries_measured_photon_times, subseries_measured_photon_energies,
-            subseries_measured_subframe_photon_times = \
+            subseries_measured_photon_times, subseries_measured_photon_energies, \
+            subseries_next_frame_first_energies, subseries_measured_subframe_photon_times = \
               self._convert_voltage_timeseries_to_measured_photons(
-                  subseries, voltage_unit=subseries_voltage_unit, threshold=threshold,
-                  return_subframe_photon_times=True)
+                  subseries, subseries_voltage_unit, samples_per_frame,
+                  threshold=threshold, return_subframe_photon_times=True)
             subseries_measured_photon_times = subseries_measured_photon_times.to(
                 incident_photons["time"].unit)
             subseries_measured_photon_energies = subseries_measured_photon_energies.to(
+                incident_photons["energy"].unit)
+            subseries_next_frame_first_energies = subseries_next_frame_first_energies.to(
                 incident_photons["energy"].unit)
             subseries_measured_subframe_photon_times = \
               subseries_measured_subframe_photon_times.to(incident_photons["time"].unit)
@@ -698,6 +702,8 @@ class HexitecSimulation():
                 measured_photon_times, subseries_measured_photon_times.value[w])
             measured_photon_energies = np.append(
                 measured_photon_energies, subseries_measured_photon_energies.value[w])
+            next_frame_first_energies = np.append(
+                next_frame_first_energies, subseries_next_frame_first_energies.value[w])
             measured_subframe_photon_times = np.append(
                 measured_subframe_photon_times,
                 subseries_measured_subframe_photon_times.value[w])
@@ -707,13 +713,15 @@ class HexitecSimulation():
         # Convert results into table and return.
         return Table(
             [Quantity(measured_photon_times, unit=incident_photons["time"].unit),
-             Quantity(measured_photon_energies, unit=incident_photons["energy"].unit)],
-             Quantity(measured_subframe_photon_times, unit=incident_photons["time"].unit),
-            names=("time", "energy", "subframe time"))
+             Quantity(measured_photon_energies, unit=incident_photons["energy"].unit),
+             Quantity(next_frame_first_energies, unit=incident_photons["energy"].unit),
+             Quantity(measured_subframe_photon_times, unit=incident_photons["time"].unit)],
+            names=("time", "energy", "next frame first energy", "subframe time"))
 
 
     def _convert_voltage_timeseries_to_measured_photons(
-            self, timeseries, voltage_unit, threshold=None, return_subframe_photon_times=False):
+            self, timeseries, voltage_unit, samples_per_frame,
+            threshold=None, return_subframe_photon_times=False):
         """Converts a time series of HEXITEC voltage to measured photons.
 
         Parameters
@@ -741,12 +749,19 @@ class HexitecSimulation():
         measured_photon_energies: `astropy.units.quantity.Quantity`
             HEXITEC measured energies of photons.
 
+        next_frame_first_energies: `astropy.units.quantity.Quantity`
+            HEXITEC measured energies of first reading in each frame.
+            This can represent the S2 signal.
+
         """
         # Convert timeseries into measured photon list by resampling
         # at frame rate and taking min.
         # In resample command, 'xN' signifies x nanoseconds.
         frame_peaks = timeseries.resample(
-            "{0}N".format(int(self.frame_duration.to(u.ns).value))).min().fillna(0)
+            "{0}N".format(round(self.frame_duration.to(u.ns).value))).min().dropna()
+        # Get the first value of each frame as the S2 measurement.
+        next_frame_first_voltages = timeseries[::samples_per_frame].shift(
+            periods=-1, axis=0).fillna(0)
 
         if return_subframe_photon_times:
             # Get times when peaks occur at subframe time cadence using
@@ -778,6 +793,8 @@ class HexitecSimulation():
         w = np.where(frame_peaks["voltage"] < threshold)[0]
         measured_photon_energies = self._convert_voltages_to_photon_energy(
             frame_peaks["voltage"][w].values, voltage_unit)
+        next_frame_first_energies = self._convert_voltages_to_photon_energy(
+            next_frame_first_voltages["voltage"][w].values, voltage_unit)
         # Determine time unit of pandas timeseries and convert photon
         # times to Quantity.
         frame_duration_secs = self.frame_duration.to("s").value
@@ -789,9 +806,10 @@ class HexitecSimulation():
             # Convert subframe measured photon times for photons above
             # threshold to Quantity.
             measured_subframe_photon_times = Quantity(rounded_frame_peak_times[w], unit="s")
-            return measured_photon_times, measured_photon_energies, measured_subframe_photon_times
+            return measured_photon_times, measured_photon_energies, \
+              next_frame_first_energies, measured_subframe_photon_times
         else:
-            return measured_photon_times, measured_photon_energies
+            return measured_photon_times, measured_photon_energies, next_frame_first_energies
 
 
     def _define_voltage_pulse_shape(self):
