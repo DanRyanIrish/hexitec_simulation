@@ -79,7 +79,8 @@ def test_simulate_hexitec_on_photon_list_1pixel():
 def test_account_for_charge_sharing_in_photon_list():
     """Test account_for_charge_sharing_in_photon_list()."""
     # Create object
-    hpu = hexitec_simulation.HexitecSimulation()
+    hpu = hexitec_simulation.HexitecSimulation(
+        charge_drift_length=1*u.mm, detector_temperature=17.2*u.Celsius, bias_voltage=500*u.V)
     # Define test incident photon list.
     times = Quantity([1, 2, 2, 3, 4, 4], unit=u.s)
     pixel_coords = np.array([0, 3, 12, 3, 3, 4])
@@ -99,8 +100,16 @@ def test_account_for_charge_sharing_in_photon_list():
     expected_y = [0, 0, 1, 1] + [coord for sublist in [
         [pixel_coord-1]*3 + [pixel_coord]*3 + [pixel_coord+1]*3
         for pixel_coord in pixel_coords[1:]] for coord in sublist]
-    expected_photons = Table([expected_times, expected_energies, expected_x, expected_y],
-                             names=("time", "energy", "x_pixel", "y_pixel"))
+    expected_neighbor_positions = [
+        "central", "right", "up", "up right", "down left", "down", "down right", "left",
+        "central", "right", "up left", "up", "up right", "down left", "down", "down right", "left",
+        "central", "right", "up left", "up", "up right", "down left", "down", "down right", "left",
+        "central", "right", "up left", "up", "up right", "down left", "down", "down right", "left",
+        "central", "right", "up left", "up", "up right", "down left", "down", "down right", "left",
+        "central", "right", "up left", "up", "up right"]
+    expected_photons = Table(
+        [expected_times, expected_energies, expected_x, expected_y, expected_neighbor_positions],
+        names=("time", "energy", "x_pixel", "y_pixel", "neighbor_positions"))
     # Run account_for_charge_sharing_in_photon_list().
     test_photons = hpu.account_for_charge_sharing_in_photon_list(
         incident_photons, hpu._charge_cloud_x_sigma, hpu._charge_cloud_y_sigma,
@@ -111,23 +120,29 @@ def test_account_for_charge_sharing_in_photon_list():
     assert all(expected_photons["energy"] == test_photons["energy"])
     assert all(expected_photons["x_pixel"] == test_photons["x_pixel"])
     assert all(expected_photons["y_pixel"] == test_photons["y_pixel"])
+    assert all(expected_photons["neighbor_positions"] == test_photons["neighbor_positions"])
 
 def test_divide_charge_among_pixels():
     """Test _divide_charge_among_pixels()."""
     x = y = 1.5
     x_sigma = y_sigma = 0.5
     n_1d_neighbours = 3
-    hpu = hexitec_simulation.HexitecSimulation()
+    hpu = hexitec_simulation.HexitecSimulation(charge_drift_length=1*u.mm,
+                                               detector_temperature=17.2*u.Celsius,
+                                               bias_voltage=500*u.V)
     # Define expected fractional energy.
-    expected_x_pixels = array([0, 1, 2, 0, 1, 2, 0, 1, 2])
-    expected_y_pixels = array([0, 0, 0, 1, 1, 1, 2, 2, 2])
-    expected_fractional_energy = array([ 0.02474497, 0.10739071, 0.02474497,
-                                         0.10739071, 0.46606494, 0.10739071,
-                                         0.02474497, 0.10739071, 0.02474497])
+    expected_x_pixels = np.array([0, 1, 2, 0, 1, 2, 0, 1, 2])
+    expected_y_pixels = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2])
+    expected_fractional_energy = np.array([0.02474497, 0.10739071, 0.02474497,
+                                           0.10739071, 0.46606494, 0.10739071,
+                                           0.02474497, 0.10739071, 0.02474497])
+    expected_neighbor_positions = ['down left', 'down', 'down right', 'left',
+                                   'central', 'right', 'up left', 'up', 'up right']
     # Run divide_charge_among_pixels().
-    test_x_pixels, test_y_pixels, test_fractional_energy = \
+    test_x_pixels, test_y_pixels, test_fractional_energy, test_neighbor_positions = \
       hpu._divide_charge_among_pixels(x, y, x_sigma, y_sigma, n_1d_neighbours)
     # Assert the expected value equal returned values.
     assert all(expected_x_pixels == test_x_pixels)
     assert all(expected_y_pixels == test_y_pixels)
-    assert all(expected_x_fractional_energy == test_fractional_energy)
+    np.testing.assert_almost_equal(expected_fractional_energy, test_fractional_energy)
+    assert expected_neighbor_positions == test_neighbor_positions
