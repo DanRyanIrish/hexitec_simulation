@@ -18,6 +18,290 @@ from scipy.special import erf
 # Defining max number of data points in a pandas dataframe.
 DATAFRAME_MAX_POINTS = 1e8
 
+def simulate_hexitec_on_spectrum(
+        incident_spectrum, photon_rate, n_photons,
+        frame_rate=Quantity(3900., unit=1/u.s),
+        incident_xpixel_range=(0,80), incident_ypixel_range=(0,80),
+        readout_xpixel_range=(0,80), readout_ypixel_range=(0,80),
+        threshold=None, charge_cloud_sigma=None,
+        charge_drift_length=1*u.mm, detector_temperature=17.2*u.Celsius, bias_voltage=500*u.V):
+    """
+    Simulates how a grid of HEXITEC pixels records photons from a given spectrum.
+
+    Parameters
+    ----------
+    incident_spectrum : `astropy.table.Table`
+        Incident photon spectrum.  Table has following columns:
+            lower_bin_edges : `astropy.units.quantity.Quantity`
+            upper_bin_edges : `astropy.units.quantity.Quantity`
+            counts : array-like
+    photon_rate: `astropy.units.Quantity`
+        The average rate of photons incident on the region of the detector defined by
+        incident_xpixel_range and incident_ypixel_range.  See below.
+    n_photons: `int`
+        Total number of incident photons.
+    frame_rate: `astropy.units.quantity.Quantity`
+        Desired frame rate at which HEXITEC operates.
+    incident_xpixel_range: `tuple` of length 2
+        The min and max in pixel units along the x-axis of the region of the detector
+        upon which the incident photons fall.
+    incident_ypixel_range: `tuple` of length 2
+        The min and max in pixel units along the y-axis of the region of the detector
+        upon which the incident photons fall.
+    readout_xpixel_range: `tuple` of length 2
+        The min and max in pixel units along the x-axis of the region of the detector
+        which are read out.
+    readout_ypixel_range: `tuple` of length 2
+        The min and max in pixel units along the y-axis of the region of the detector
+        which are read out.
+    threshold: `astropy.units.quantity.Quantity`
+        Threshold below which a detection is defined.  Note that voltage pulses are negative.
+    charge_cloud_sigma: `astropy.units.quantity.Quantity`
+        Standard deviation of the charge cloud induced by a photon detection.
+        If this is note set, it is calculated using values of
+        charge_drift_length, detector_temperature and bias_voltage, defined below.
+    charge_drift_length: `astropy.units.quantity.Quantity`
+        Vertical distance through detector over which charge drifts once it is absorbed.
+    detector_temperature: `astropy.units.quantity.Quantity`
+        Temperature of detector.
+    bias_voltage: `astropy.units.quantity.Quantity`
+       Bias voltage across detector.
+
+    Returns
+    -------
+    hs: HexitecSimulation
+        Class holding results and parameters of the simulation.
+        hs.measured_spectrum: `astropy.table.Table`
+            Measured spectrum taking photon masking of HEXITEC pixel into account.
+        hs.measured_photons: `astropy.table.Table`
+            See description of "self.measured_photons" in "Returns" section of
+            docstring of generate_random_photons_from_spectrum().
+        hs.incident_photons : `astropy.table.Table`
+            Table of photons incident on the pixel.  Contains the following columns
+            time: Amount of time passed from beginning of observing until photon hit.
+            energy: Energy of each photon.
+        hs.incident_spectrum: `astropy.table.Table`
+          Same as input incident_spectrum.
+
+    """
+    # Generate random photons incident on detector.
+    incident_photons = generate_random_photons(incident_xpixel_range, incident_ypixel_range,
+                                               incident_spectrum, photon_rate, n_photons)
+    # Simulate how HEXITEC records incident photons.
+    hs = simulate_hexitec_on_photon_list(
+        incident_photons, frame_rate=frame_rate,
+        incident_xpixel_range=incident_xpixel_range, incident_ypixel_range=incident_ypixel_range,
+        readout_xpixel_range=readout_xpixel_range, readout_ypixel_range=readout_ypixel_range,
+        threshold=threshold, charge_cloud_sigma=charge_cloud_sigma,
+        charge_drift_length=charge_drift_length, detector_temperature=detector_temperature,
+        bias_voltage=bias_voltage)
+    hs.incident_spectrum = incident_spectrum
+    return hs
+
+
+def simulate_hexitec_on_photon_list(
+        incident_photons, frame_rate=Quantity(3900., unit=1/u.s),
+        incident_xpixel_range=(0,80), incident_ypixel_range=(0,80),
+        readout_xpixel_range=(0,80), readout_ypixel_range=(0,80),
+        threshold=None, charge_cloud_sigma=None,
+        charge_drift_length=1*u.mm, detector_temperature=17.2*u.Celsius, bias_voltage=500*u.V):
+    """
+    Simulates how HEXITEC pixels record photons from a given photon list.
+
+    Parameters
+    ----------
+    incident_photons: `astropy.table.Table`
+        Incident photon spectrum.  Table has following columns:
+            time: `astropy.units.quantity.Quantity`
+                Time between current photon hit and previous photon hit.
+                For first photon in list, this number is time of photon hit
+                since beginning of simulation, i.e. since time=0.
+            energy: `astropy.units.quantity.Quantity`
+                Energy of photon.
+            x: `float`
+                Position along x-axis in pixel units of photon detection.
+            y: `float`
+                Position along y-axis in pixel units of photon detection.
+    frame_rate: `astropy.units.quantity.Quantity`
+        Desired frame rate at which HEXITEC operates.
+    incident_xpixel_range: `tuple` of length 2
+        The min and max in pixel units along the x-axis of the region of the detector
+        upon which the incident photons fall.
+    incident_ypixel_range: `tuple` of length 2
+        The min and max in pixel units along the y-axis of the region of the detector
+        upon which the incident photons fall.
+    readout_xpixel_range: `tuple` of length 2
+        The min and max in pixel units along the x-axis of the region of the detector
+        which are read out.
+    readout_ypixel_range: `tuple` of length 2
+        The min and max in pixel units along the y-axis of the region of the detector
+        which are read out.
+    threshold: `astropy.units.quantity.Quantity`
+        Threshold below which a detection is defined.  Note that voltage pulses are negative.
+    charge_cloud_sigma: `astropy.units.quantity.Quantity`
+        Standard deviation of the charge cloud induced by a photon detection.
+        If this is note set, it is calculated using values of
+        charge_drift_length, detector_temperature and bias_voltage, defined below.
+    charge_drift_length: `astropy.units.quantity.Quantity`
+        Vertical distance through detector over which charge drifts once it is absorbed.
+    detector_temperature: `astropy.units.quantity.Quantity`
+        Temperature of detector.
+    bias_voltage: `astropy.units.quantity.Quantity`
+       Bias voltage across detector.
+
+    Returns
+    -------
+    hs: HexitecSimulation
+        Class holding results and parameters of the simulation.
+        hs.measured_spectrum : `astropy.table.Table`
+          Measured spectrum taking photon masking of HEXITEC pixel into account.
+        hs.measured_photons : `astropy.table.Table`
+          See description of "self.measured_photons" in "Returns" section of
+          docstring of generate_random_photons_from_spectrum().
+        hs.incident_photons : `astropy.table.Table`
+          Table of photons incident on the pixel.  Contains the following columns
+          time : Amount of time passed from beginning of observing
+            until photon hit.
+          energy : Energy of each photon.
+
+    """
+    # Define simulation instance
+    hs = HexitecSimulation(
+        frame_rate=frame_rate,
+        incident_xpixel_range=incident_xpixel_range, incident_ypixel_range=incident_ypixel_range,
+        readout_xpixel_range=readout_xpixel_range, readout_ypixel_range=readout_ypixel_range,
+        charge_cloud_sigma=charge_cloud_sigma, threshold=threshold,
+        charge_drift_length=charge_drift_length, detector_temperature=detector_temperature,
+        bias_voltage=bias_voltage)
+    hs.incident_photons = incident_photons
+    # Produce photon list accounting for charge sharing.
+    pixelated_photons = hs.account_for_charge_sharing_in_photon_list(
+        incident_photons, hs._charge_cloud_x_sigma,
+        hs._charge_cloud_y_sigma, hs._n_1d_neighbours)
+    # Separate photons by pixel and simulate each pixel's
+    # measurements.
+    measured_photons = Table([Quantity([], unit=hs.incident_photons["time"].unit),
+                              Quantity([], unit=hs.incident_photons["energy"].unit),
+                              [], []], names=("time", "energy", "x", "y"))
+    for j in range(hs.readout_ypixel_range[0], hs.readout_ypixel_range[1]):
+        for i in range(hs.readout_xpixel_range[0], hs.readout_xpixel_range[1]):
+            print("Processing photons hitting pixel ({0}, {1}) of {2} at {3}".format(
+                    i, j, (hs.readout_xpixel_range[1]-1,
+                           hs.readout_ypixel_range[1]-1), datetime.now()))
+            time1 = timeit.default_timer()
+            # Find which photons in list, if any, are in given pixel.
+            w = np.logical_and(pixelated_photons["x_pixel"] == i,
+                               pixelated_photons["y_pixel"] == j)
+            # If photons did hit given pixel, simulate how HEXITEC
+            # interprets them.
+            if w.any():
+                # Define threshold for pixel.
+                if hs.threshold.shape == ():
+                    threshold = hs.threshold
+                else:
+                    threshold = hs.threshold[i-hs.readout_xpixel_range[0],
+                                               j-hs.readout_ypixel_range[0]]
+                pixel_measured_photons = \
+                  hs.simulate_hexitec_on_photon_list_1pixel(pixelated_photons[w],
+                                                              threshold=threshold)
+                # Add pixel info to pixel_measured_photons table.
+                pixel_measured_photons["x"] = [i]*len(pixel_measured_photons)
+                pixel_measured_photons["y"] = [j]*len(pixel_measured_photons)
+                measured_photons = vstack((measured_photons, pixel_measured_photons))
+            time2 = timeit.default_timer()
+            print("Finished processing pixel ({0}, {1}) of {2} in {3} s.".format(
+                i, j, (hs.readout_xpixel_range[1]-1, hs.readout_ypixel_range[1]-1),
+                time2-time1))
+            print(" ")
+    # Sort photons by time and return to object.
+    measured_photons.sort("time")
+    hs.measured_photons = measured_photons
+
+    return hs
+
+
+def generate_random_photons(incident_xpixel_range, incident_ypixel_range,
+                            incident_spectrum, photon_rate, n_photons):
+        """Generates random photon times, energies and detector hit locations."""
+        # Generate photon times since start of observations (t=0).
+        photon_times = _generate_random_photon_times(photon_rate, n_photons)
+        # Generate photon energies.
+        photon_energies = _generate_random_photon_energies_from_spectrum(
+            incident_spectrum, photon_rate, n_photons)
+        # Generate photon hit locations.
+        x_locations, y_locations = _generate_random_photon_locations(
+            incident_xpixel_range, incident_ypixel_range, n_photons)
+        # Associate photon times, energies and locations.
+        return Table([photon_times, photon_energies, x_locations, y_locations],
+                     names=("time", "energy", "x", "y"))
+
+
+def _generate_random_photon_times(photon_rate, n_photons):
+    """Generates random photon times."""
+    # Generate random waiting times before each photon.
+    photon_waiting_times = Quantity(
+        np.random.exponential((1./photon_rate).to(u.s).value, n_photons), unit='s')
+    return photon_waiting_times.cumsum()
+
+
+def _generate_random_photon_energies_from_spectrum(incident_spectrum, photon_rate, n_photons):
+    """
+    Converts an input photon spectrum to a probability distribution.
+
+    Parameters
+    ----------
+    incident_spectrum : `astropy.table.Table`
+        Incident photon spectrum.  Table has following columns:
+            lower_bin_edges : `astropy.units.quantity.Quantity`
+            upper_bin_edges : `astropy.units.quantity.Quantity`
+            counts : array-like
+      photon_rate : `astropy.units.quantity.Quantity`
+          Average rate at which photons hit the pixel.
+      n_photons : `int`
+          Total number of random counts to be generated.
+
+    Returns
+    -------
+    photon_energies : `astropy.units.quantity.Quantity`
+        Photon energies
+
+    """
+    if type(photon_rate) is not Quantity:
+        raise TypeError("photon_rate must be an astropy.units.quantity.Quantity")
+    n_counts = int(n_photons)
+    # Calculate cumulative density function of spectrum for lower and
+    # upper edges of spectral bins.
+    cdf_upper = np.cumsum(incident_spectrum["counts"])
+    cdf_lower = np.insert(cdf_upper, 0, 0.)
+    cdf_lower = np.delete(cdf_lower, -1)
+    # Generate random numbers representing CDF values.
+    print("Generating random numbers for photon energy transformation.")
+    time1 = timeit.default_timer()
+    randoms = np.asarray([random.random() for i in range(n_counts)])*cdf_upper[-1]
+    time2 = timeit.default_timer()
+    print("Finished in {0} s.".format(time2-time1))
+    # Generate array of spectrum bin indices.
+    print("Transforming random numbers into photon energies.")
+    time1 = timeit.default_timer()
+    bin_indices = np.arange(len(incident_spectrum["lower_bin_edges"]))
+    # Generate random energies from randomly generated CDF values.
+    photon_energies = Quantity([incident_spectrum["lower_bin_edges"].data[
+        bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
+        for r in randoms], unit=incident_spectrum["lower_bin_edges"].unit)
+    time2 = timeit.default_timer()
+    print("Finished in {0} s.".format(time2-time1))
+    return photon_energies
+
+
+def _generate_random_photon_locations(incident_xpixel_range, incident_ypixel_range, n_photons):
+    """Generates random photon hit locations."""
+    # Generate random x locations for each photon.
+    x = np.random.uniform(incident_xpixel_range[0], incident_xpixel_range[1], n_photons)
+    y = np.random.uniform(incident_ypixel_range[0], incident_ypixel_range[1], n_photons)
+    return x, y
+
+
+
 class HexitecSimulation():
     """Simulates how HEXITEC records incident photons."""
 
@@ -253,144 +537,6 @@ class HexitecSimulation():
         print("Finished in {0} s.".format(time2-time1))
         return photons
 
-
-    def simulate_hexitec_on_spectrum(self, incident_spectrum, photon_rate, n_photons):
-        """Simulates how a grid of HEXITEC pixels records photons from a given spectrum."""
-        # Generate random photons incident on detector.
-        self.incident_photons = self.generate_random_photons(incident_spectrum,
-                                                             photon_rate, n_photons)
-        # Simulate how HEXITEC records incident photons.
-        self.simulate_hexitec_on_photon_list(self.incident_photons)
-
-
-    def simulate_hexitec_on_photon_list(self, incident_photons):
-        """Simulates how HEXITEC pixels record photons from a given photon list."""
-        # Produce photon list accounting for charge sharing.
-        pixelated_photons = self.account_for_charge_sharing_in_photon_list(
-            incident_photons, self._charge_cloud_x_sigma,
-            self._charge_cloud_y_sigma, self._n_1d_neighbours)
-        # Separate photons by pixel and simulate each pixel's
-        # measurements.
-        measured_photons = Table([Quantity([], unit=self.incident_photons["time"].unit),
-                                  Quantity([], unit=self.incident_photons["energy"].unit),
-                                  [], []], names=("time", "energy", "x", "y"))
-        for j in range(self.readout_ypixel_range[0], self.readout_ypixel_range[1]):
-            for i in range(self.readout_xpixel_range[0], self.readout_xpixel_range[1]):
-                print("Processing photons hitting pixel ({0}, {1}) of {2} at {3}".format(
-                        i, j, (self.readout_xpixel_range[1]-1,
-                               self.readout_ypixel_range[1]-1), datetime.now()))
-                time1 = timeit.default_timer()
-                # Find which photons in list, if any, are in given pixel.
-                w = np.logical_and(pixelated_photons["x_pixel"] == i,
-                                   pixelated_photons["y_pixel"] == j)
-                # If photons did hit given pixel, simulate how HEXITEC
-                # interprets them.
-                if w.any():
-                    # Define threshold for pixel.
-                    if self.threshold.shape == ():
-                        threshold = self.threshold
-                    else:
-                        threshold = self.threshold[i-self.readout_xpixel_range[0],
-                                                   j-self.readout_ypixel_range[0]]
-                    pixel_measured_photons = \
-                      self.simulate_hexitec_on_photon_list_1pixel(pixelated_photons[w],
-                                                                  threshold=threshold)
-                    # Add pixel info to pixel_measured_photons table.
-                    pixel_measured_photons["x"] = [i]*len(pixel_measured_photons)
-                    pixel_measured_photons["y"] = [j]*len(pixel_measured_photons)
-                    measured_photons = vstack((measured_photons, pixel_measured_photons))
-                time2 = timeit.default_timer()
-                print("Finished processing pixel ({0}, {1}) of {2} in {3} s.".format(
-                    i, j, (self.readout_xpixel_range[1]-1, self.readout_ypixel_range[1]-1),
-                    time2-time1))
-                print(" ")
-        # Sort photons by time and return to object.
-        measured_photons.sort("time")
-        self.measured_photons = measured_photons
-
-
-    def generate_random_photons(self, incident_spectrum, photon_rate, n_photons):
-        """Generates random photon times, energies and detector hit locations."""
-        self.photon_rate = photon_rate
-        # Generate photon times since start of observations (t=0).
-        photon_times = self._generate_random_photon_times(n_photons)
-        # Generate photon energies.
-        photon_energies = self._generate_random_photon_energies_from_spectrum(
-            incident_spectrum, photon_rate, n_photons)
-        # Generate photon hit locations.
-        x_locations, y_locations = self._generate_random_photon_locations(n_photons)
-        # Associate photon times, energies and locations.
-        return Table([photon_times, photon_energies, x_locations, y_locations],
-                     names=("time", "energy", "x", "y"))
-
-
-    def _generate_random_photon_energies_from_spectrum(self, incident_spectrum,
-                                                       photon_rate, n_photons):
-        """Converts an input photon spectrum to a probability distribution.
-
-        Parameters
-        ----------
-        incident_spectrum : `astropy.table.Table`
-          Incident photon spectrum.  Table has following columns:
-            lower_bin_edges : `astropy.units.quantity.Quantity`
-            upper_bin_edges : `astropy.units.quantity.Quantity`
-            counts : array-like
-        photon_rate : `astropy.units.quantity.Quantity`
-          Average rate at which photons hit the pixel.
-        n_photons : `int`
-          Total number of random counts to be generated.
-
-        Returns
-        -------
-        photon_energies : `astropy.units.quantity.Quantity`
-            Photon energies
-
-        """
-        self.incident_spectrum = incident_spectrum
-        if type(photon_rate) is not Quantity:
-            raise TypeError("photon_rate must be an astropy.units.quantity.Quantity")
-        self.photon_rate = photon_rate
-        n_counts = int(n_photons)
-        # Calculate cumulative density function of spectrum for lower and
-        # upper edges of spectral bins.
-        cdf_upper = np.cumsum(self.incident_spectrum["counts"])
-        cdf_lower = np.insert(cdf_upper, 0, 0.)
-        cdf_lower = np.delete(cdf_lower, -1)
-        # Generate random numbers representing CDF values.
-        print("Generating random numbers for photon energy transformation.")
-        time1 = timeit.default_timer()
-        randoms = np.asarray([random.random() for i in range(n_counts)])*cdf_upper[-1]
-        time2 = timeit.default_timer()
-        print("Finished in {0} s.".format(time2-time1))
-        # Generate array of spectrum bin indices.
-        print("Transforming random numbers into photon energies.")
-        time1 = timeit.default_timer()
-        bin_indices = np.arange(len(self.incident_spectrum["lower_bin_edges"]))
-        # Generate random energies from randomly generated CDF values.
-        photon_energies = Quantity([self.incident_spectrum["lower_bin_edges"].data[
-            bin_indices[np.logical_and(r >= cdf_lower, r < cdf_upper)][0]]
-            for r in randoms], unit=self.incident_spectrum["lower_bin_edges"].unit)
-        time2 = timeit.default_timer()
-        print("Finished in {0} s.".format(time2-time1))
-        return photon_energies
-
-
-    def _generate_random_photon_times(self, n_photons):
-        """Generates random photon times."""
-        # Generate random waiting times before each photon.
-        photon_waiting_times = Quantity(
-            np.random.exponential((1./self.photon_rate).to(u.s).value, n_photons), unit='s')
-        return photon_waiting_times.cumsum()
-
-
-    def _generate_random_photon_locations(self, n_photons):
-        """Generates random photon hit locations."""
-        # Generate random x locations for each photon.
-        x = np.random.uniform(
-                self.incident_xpixel_range[0], self.incident_xpixel_range[1], n_photons)
-        y = np.random.uniform(
-                self.incident_ypixel_range[0], self.incident_ypixel_range[1], n_photons)
-        return x, y
 
     def simulate_cdte_fluorescence(energy):
         """Simulates Cadmium and Tellurium fluorescence."""
